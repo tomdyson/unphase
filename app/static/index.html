@@ -306,11 +306,27 @@
             </div>
             <div class="meter-track relative h-3 border border-slate700">
               <div
-                class="absolute inset-y-0 left-0 bg-signal transition-all duration-500"
+                class="absolute inset-y-0 left-0 transition-all duration-500"
+                :class="confidenceColor()"
                 :style="`width: ${Math.min(result.confidence * 100, 100)}%`"
               ></div>
             </div>
             <p class="text-[11px] text-bone/60 mt-3" x-text="confidenceAdvice()"></p>
+            <p class="text-[11px] text-dim mt-1 font-mono">
+              peak <span x-text="result.peak_corr.toFixed(3)"></span> &middot;
+              peak/noise-floor <span x-text="result.peak_over_median.toFixed(1)"></span>&times;
+            </p>
+            <template x-if="!result.sanity_ok">
+              <div class="mt-4 border border-alert/60 bg-alert/10 px-4 py-3 text-[11px] text-alert/90 leading-relaxed">
+                <span class="uppercase tracking-[0.2em] text-alert font-bold">⚠ sanity check failed &middot; </span>
+                The envelope-based coarse alignment disagrees with the fine
+                correlator by
+                <span x-text="Math.abs(result.envelope_lag_samples - result.lag_samples)"></span>
+                samples. The fine peak may be a pitch-period sidelobe rather
+                than the true onset. Treat this delay as a guess and verify by
+                ear.
+              </div>
+            </template>
           </div>
 
           <!-- Technical details -->
@@ -351,8 +367,20 @@
                 <span class="font-mono" x-text="result.sample_rate + ' Hz'"></span>
               </div>
               <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Confidence</span>
-                <span class="font-mono" x-text="result.confidence.toFixed(4)"></span>
+                <span class="text-dim uppercase tracking-wider">Peak correlation</span>
+                <span class="font-mono" x-text="result.peak_corr.toFixed(4)"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Peak / median</span>
+                <span class="font-mono" x-text="result.peak_over_median.toFixed(2) + '×'"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Envelope lag</span>
+                <span class="font-mono" x-text="result.envelope_lag_samples + ' samples'"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Sanity check</span>
+                <span class="font-mono" :class="result.sanity_ok ? 'text-trace' : 'text-alert'" x-text="result.sanity_ok ? 'pass' : 'fail'"></span>
               </div>
             </div>
           </details>
@@ -477,13 +505,22 @@
             return (this.result.confidence * 100).toFixed(1) + '%';
           },
 
+          confidenceColor() {
+            if (!this.result) return 'bg-signal';
+            if (!this.result.sanity_ok) return 'bg-alert';
+            const c = this.result.confidence;
+            if (c > 0.75) return 'bg-trace';
+            if (c > 0.5) return 'bg-signal';
+            return 'bg-alert';
+          },
+
           confidenceAdvice() {
             if (!this.result) return '';
             const c = this.result.confidence;
-            if (c > 0.5) return 'Strong correlation — result is reliable.';
-            if (c > 0.2)
-              return 'Moderate correlation — verify by ear with a null test.';
-            return 'Weak correlation — the mics may be hearing very different content. Treat as a starting point, not a final value.';
+            if (c > 0.75) return 'Strong peak, well above the correlation noise floor — result is reliable.';
+            if (c > 0.5)
+              return 'Moderate peak — likely correct, but verify by ear with a null test.';
+            return 'Weak peak — the mics may be hearing very different content. Treat as a starting point, not a final value.';
           },
         };
       }

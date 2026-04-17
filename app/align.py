@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.io import wavfile
-from scipy.signal import correlate
+from scipy.signal import correlate, hilbert
 
 
 @dataclass
@@ -25,11 +25,19 @@ class AlignmentResult:
     lag_samples: int
     sub_sample_lag: float
     invert_polarity: bool
+    # 0-1 strength score derived from peak prominence over noise floor.
     confidence: float
+    # Raw peak correlation in [-1, 1]; bare height, not prominence.
+    peak_corr: float
+    # Peak divided by median |corr| across the search window. A proper
+    # "how much does the peak stand out" measure. > ~5 is a confident lock.
+    peak_over_median: float
+    # Envelope-based coarse lag, in samples. If this disagrees strongly with
+    # `lag_samples`, the fine correlator may be fooled by a sidelobe.
+    envelope_lag_samples: int
+    sanity_ok: bool
     sample_rate: int
-    # Which input is the close mic: "a", "b", or "aligned"
     close_mic: str
-    # How much to delay the close mic, in samples and ms (always positive)
     delay_samples: int
     delay_ms: float
 
@@ -47,7 +55,7 @@ def decode_to_mono(input_path: str, target_sr: int) -> np.ndarray:
             "-i",
             input_path,
             "-ac",
-            "1",  # downmix to mono
+            "1",
             "-ar",
             str(target_sr),
             "-c:a",
@@ -63,6 +71,12 @@ def decode_to_mono(input_path: str, target_sr: int) -> np.ndarray:
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+def _normalize(x: np.ndarray) -> np.ndarray:
+    x = x - np.mean(x)
+    s = np.std(x)
+    return x / (s + 1e-12)
 
 
 def align(
@@ -81,19 +95,14 @@ def align(
     """
     max_lag = int(max_ms * 1e-3 * sample_rate)
 
-    # Use a centered window up to 30 seconds for the correlation.
     n = min(len(audio_a), len(audio_b))
     analysis_len = min(n, 30 * sample_rate)
     start = max(0, (n - analysis_len) // 2)
     a = audio_a[start : start + analysis_len]
     b = audio_b[start : start + analysis_len]
 
-    # Zero-mean and unit-variance normalize so the correlation peak is a
-    # proper correlation coefficient in [-1, 1].
-    a = a - np.mean(a)
-    b = b - np.mean(b)
-    a_norm = a / (np.std(a) + 1e-12)
-    b_norm = b / (np.std(b) + 1e-12)
+    a_norm = _normalize(a)
+    b_norm = _normalize(b)
 
     corr = correlate(a_norm, b_norm, mode="full", method="fft")
     corr /= len(a_norm)
@@ -104,12 +113,10 @@ def align(
     window = corr[lo:hi]
     lags = np.arange(lo, hi) - zero_lag_idx
 
-    # Peak of absolute correlation catches polarity-inverted matches.
     peak_idx = int(np.argmax(np.abs(window)))
     peak_val = float(window[peak_idx])
     best_lag = int(lags[peak_idx])
     invert = peak_val < 0
-    confidence = abs(peak_val)
 
     # Parabolic interpolation for sub-sample accuracy.
     if 0 < peak_idx < len(window) - 1:
@@ -123,7 +130,33 @@ def align(
     else:
         sub_lag = float(best_lag)
 
-    # Decide which input is the close mic from the sign of the lag.
+    # Peak prominence over the noise floor of the correlation function.
+    # Median of |corr| across the search window is robust to the main lobe
+    # (which occupies only a few samples of a window that's thousands wide)
+    # and to any coherent sidelobes.
+    abs_window = np.abs(window)
+    median_floor = float(np.median(abs_window))
+    peak_over_median = abs(peak_val) / (median_floor + 1e-12)
+
+    # Map prominence to a 0-1 strength. peak/median ≈ 1 → 0, ≈ 10 → 0.9.
+    confidence = 1.0 - 1.0 / max(peak_over_median, 1.0)
+
+    # Envelope sanity check: compute a Hilbert-envelope coarse alignment.
+    # It ignores phase detail so it can't lock onto pitch-period sidelobes.
+    # If it disagrees with the fine correlator by more than 5 ms, something
+    # is off — flag low confidence.
+    env_a = np.abs(hilbert(a))
+    env_b = np.abs(hilbert(b))
+    env_a = _normalize(env_a)
+    env_b = _normalize(env_b)
+    env_corr = correlate(env_a, env_b, mode="full", method="fft") / len(env_a)
+    env_window = env_corr[lo:hi]
+    env_peak_idx = int(np.argmax(np.abs(env_window)))
+    env_lag = int(lags[env_peak_idx])
+
+    disagreement_ms = abs(env_lag - best_lag) * 1000 / sample_rate
+    sanity_ok = disagreement_ms <= 5.0
+
     if best_lag > 0:
         close_mic = label_b
         delay_samples = best_lag
@@ -141,6 +174,10 @@ def align(
         sub_sample_lag=sub_lag,
         invert_polarity=invert,
         confidence=confidence,
+        peak_corr=peak_val,
+        peak_over_median=peak_over_median,
+        envelope_lag_samples=env_lag,
+        sanity_ok=sanity_ok,
         sample_rate=sample_rate,
         close_mic=close_mic,
         delay_samples=delay_samples,
