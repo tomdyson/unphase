@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .align import align, decode_to_mono
+from .align import align, decode_to_mono, probe_channels
 
 app = FastAPI(title="Unphase", docs_url=None, redoc_url=None)
 
@@ -82,9 +82,11 @@ async def _run_pipeline(
 
     try:
         yield event(phase="decode", file="a")
+        channels_a = await asyncio.to_thread(probe_channels, tmp_a)
         audio_a = await asyncio.to_thread(decode_to_mono, tmp_a, TARGET_SR)
 
         yield event(phase="decode", file="b")
+        channels_b = await asyncio.to_thread(probe_channels, tmp_b)
         audio_b = await asyncio.to_thread(decode_to_mono, tmp_b, TARGET_SR)
     except RuntimeError as exc:
         yield event(phase="error", detail=f"Could not decode audio. ffmpeg says: {exc}")
@@ -132,6 +134,8 @@ async def _run_pipeline(
         phase="result",
         file_a=name_a,
         file_b=name_b,
+        channels_a=channels_a,
+        channels_b=channels_b,
         duration_a_s=round(len(audio_a) / TARGET_SR, 2),
         duration_b_s=round(len(audio_b) / TARGET_SR, 2),
         sample_rate=result.sample_rate,

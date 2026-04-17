@@ -42,6 +42,29 @@ class AlignmentResult:
     delay_ms: float
 
 
+def probe_channels(input_path: str) -> int:
+    """Return the original channel count of an audio file via ffprobe."""
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=channels",
+        "-of",
+        "default=nw=1:nk=1",
+        input_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return 0
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return 0
+
+
 def decode_to_mono(input_path: str, target_sr: int) -> np.ndarray:
     """Use ffmpeg to decode any audio file to mono float64 at target_sr."""
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
