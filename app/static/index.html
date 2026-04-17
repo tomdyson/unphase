@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UNPHASE / a mic alignment tool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Fraunces:opsz,wght,SOFT@9..144,300;9..144,400;9..144,500;9..144,700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"
+    ></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+              display: ['Fraunces', 'ui-serif', 'serif'],
+            },
+            colors: {
+              ink: '#0a0a0a',
+              carbon: '#141414',
+              slate850: '#1c1c1c',
+              slate700: '#2a2a2a',
+              dim: '#6b6b6b',
+              bone: '#e8e4da',
+              signal: '#f4c542', // amber LED
+              alert: '#d95c3a', // warning red
+              trace: '#7dd3c0', // cyan scope line
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      html, body { background: #0a0a0a; }
+      body {
+        background-image:
+          radial-gradient(circle at 20% -10%, rgba(244, 197, 66, 0.04), transparent 40%),
+          radial-gradient(circle at 90% 110%, rgba(125, 211, 192, 0.03), transparent 40%);
+      }
+      /* Subtle grain */
+      .grain::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' /%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E");
+        opacity: 0.05;
+        mix-blend-mode: overlay;
+        z-index: 100;
+      }
+      /* Corner brackets on the drop zones */
+      .corners::before,
+      .corners::after,
+      .corners > .tl::before,
+      .corners > .tl::after {
+        content: '';
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        border-color: #6b6b6b;
+        transition: border-color 200ms ease;
+      }
+      .corners::before { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
+      .corners::after  { top: -1px; right: -1px; border-top: 1px solid; border-right: 1px solid; }
+      .corners > .tl::before { bottom: -1px; left: -1px; border-bottom: 1px solid; border-left: 1px solid; }
+      .corners > .tl::after  { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
+      .corners.active::before,
+      .corners.active::after,
+      .corners.active > .tl::before,
+      .corners.active > .tl::after {
+        border-color: #f4c542;
+      }
+      /* LED blink */
+      @keyframes led-pulse {
+        0%, 100% { opacity: 1; box-shadow: 0 0 8px currentColor; }
+        50% { opacity: 0.4; box-shadow: 0 0 4px currentColor; }
+      }
+      .led { animation: led-pulse 1.2s ease-in-out infinite; }
+      /* Scanline on results panel */
+      @keyframes scan {
+        0% { transform: translateY(-100%); }
+        100% { transform: translateY(100%); }
+      }
+      .scanline {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .scanline::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 40%;
+        background: linear-gradient(
+          180deg,
+          transparent,
+          rgba(244, 197, 66, 0.04),
+          transparent
+        );
+        animation: scan 4s linear infinite;
+      }
+      /* Meter bar */
+      .meter-track {
+        background: repeating-linear-gradient(
+          90deg,
+          #2a2a2a 0,
+          #2a2a2a 2px,
+          transparent 2px,
+          transparent 5px
+        );
+      }
+      /* Input file hidden */
+      input[type='file'] { display: none; }
+      /* Hover cursor on drop zones */
+      .dropzone { cursor: pointer; }
+      .dropzone:hover { background-color: rgba(244, 197, 66, 0.02); }
+    </style>
+  </head>
+  <body
+    class="grain min-h-screen text-bone font-mono antialiased selection:bg-signal selection:text-ink"
+    x-data="unphase()"
+  >
+    <!-- Header bar -->
+    <header
+      class="border-b border-slate700/60 px-6 py-4 flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-dim"
+    >
+      <div class="flex items-center gap-3">
+        <span
+          class="led inline-block w-1.5 h-1.5 rounded-full bg-signal text-signal"
+        ></span>
+        <span>UNPHASE &middot; v1.0</span>
+      </div>
+      <div class="hidden sm:block" x-text="statusText"></div>
+      <div>48 KHZ / MONO / FFT</div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-6 pt-16 pb-24">
+      <!-- Title block -->
+      <section class="mb-16">
+        <p class="text-[11px] uppercase tracking-[0.3em] text-dim mb-6">
+          Audio Engineering Tools &mdash; No. 1
+        </p>
+        <h1
+          class="font-display font-light text-6xl sm:text-7xl md:text-8xl leading-[0.9] tracking-tight mb-8"
+        >
+          <span class="italic font-light">un</span><span class="font-normal">phase</span>
+        </h1>
+        <p class="max-w-xl text-sm leading-relaxed text-bone/70">
+          Drop two recordings of the same moment — a stereo pair and a spot
+          mic, say — and the tool returns the sample-accurate delay and
+          polarity needed to align them. It works out which file is the close
+          mic from the correlation lag, so you don&rsquo;t need to label them.
+        </p>
+      </section>
+
+      <!-- Drop zones -->
+      <section class="grid md:grid-cols-2 gap-6 mb-6">
+        <template x-for="slot in ['a', 'b']" :key="slot">
+          <div
+            class="dropzone corners relative bg-carbon border border-slate700/60 p-8 min-h-[220px] flex flex-col"
+            :class="{ 'active': files[slot] || dragging[slot] }"
+            @click="$refs['input_' + slot].click()"
+            @dragover.prevent="dragging[slot] = true"
+            @dragenter.prevent="dragging[slot] = true"
+            @dragleave.prevent="dragging[slot] = false"
+            @drop.prevent="handleDrop($event, slot)"
+          >
+            <span class="tl"></span>
+            <input
+              type="file"
+              :ref="'input_' + slot"
+              accept="audio/*"
+              @change="handlePick($event, slot)"
+            />
+            <div
+              class="flex items-center justify-between text-[10px] uppercase tracking-[0.25em] text-dim mb-4"
+            >
+              <span>Input <span x-text="slot.toUpperCase()"></span></span>
+              <span x-show="files[slot]" class="text-signal">&#x25CF; loaded</span>
+              <span x-show="!files[slot]">&mdash; empty &mdash;</span>
+            </div>
+            <div class="flex-1 flex items-center justify-center text-center">
+              <template x-if="!files[slot]">
+                <div>
+                  <p class="font-display italic text-2xl text-bone/80 mb-2">
+                    drop an audio file
+                  </p>
+                  <p class="text-[11px] text-dim">
+                    or click to browse &nbsp;&middot;&nbsp; wav, aiff, flac,
+                    mp3
+                  </p>
+                </div>
+              </template>
+              <template x-if="files[slot]">
+                <div class="w-full">
+                  <p
+                    class="font-display text-xl text-bone truncate mb-1"
+                    x-text="files[slot].name"
+                  ></p>
+                  <p class="text-[11px] text-dim" x-text="formatSize(files[slot].size)"></p>
+                  <button
+                    class="mt-3 text-[10px] uppercase tracking-[0.25em] text-dim hover:text-alert transition"
+                    @click.stop="files[slot] = null"
+                  >
+                    [ remove ]
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <!-- Action bar -->
+      <section class="flex flex-col sm:flex-row sm:items-center gap-4 mb-12">
+        <button
+          class="px-8 py-4 bg-signal text-ink font-mono text-[11px] uppercase tracking-[0.3em] font-bold disabled:bg-slate700 disabled:text-dim transition hover:bg-signal/80"
+          :disabled="!ready || loading"
+          @click="analyze"
+        >
+          <span x-show="!loading">&rarr; Analyze</span>
+          <span x-show="loading">&middot;&middot;&middot; computing</span>
+        </button>
+        <p class="text-[11px] uppercase tracking-[0.2em] text-dim">
+          <span x-show="!ready && !loading">Load both inputs to continue</span>
+          <span x-show="ready && !loading && !result">Ready</span>
+          <span x-show="loading">Decoding &amp; cross-correlating</span>
+          <span x-show="result" class="text-signal">Result below</span>
+          <span x-show="error" class="text-alert" x-text="error"></span>
+        </p>
+      </section>
+
+      <!-- Results panel -->
+      <template x-if="result">
+        <section
+          class="relative bg-slate850 border border-slate700/60 p-8 md:p-12"
+        >
+          <div class="scanline"></div>
+          <p
+            class="text-[10px] uppercase tracking-[0.3em] text-dim mb-10"
+          >
+            Output &mdash; readout
+          </p>
+
+          <!-- Verdict -->
+          <div class="mb-12">
+            <p class="text-[11px] uppercase tracking-[0.25em] text-dim mb-2">
+              The close mic is
+            </p>
+            <p
+              class="font-display text-3xl md:text-5xl text-signal break-all"
+              x-text="closeMicName()"
+            ></p>
+            <p class="text-sm text-bone/60 mt-3" x-text="closeMicExplanation()"></p>
+          </div>
+
+          <!-- Primary numbers -->
+          <div class="grid sm:grid-cols-2 gap-x-12 gap-y-8 mb-12">
+            <div>
+              <p class="text-[10px] uppercase tracking-[0.3em] text-dim mb-2">
+                Delay close mic by
+              </p>
+              <p class="font-display text-5xl md:text-6xl">
+                <span x-text="result.delay_ms.toFixed(2)"></span><span class="text-2xl text-dim"> ms</span>
+              </p>
+              <p class="text-[11px] text-dim mt-2 font-mono">
+                <span x-text="result.delay_samples_48k"></span> samples @ 48 kHz
+                &middot;
+                <span x-text="result.delay_samples_44k"></span> @ 44.1 kHz
+              </p>
+            </div>
+            <div>
+              <p class="text-[10px] uppercase tracking-[0.3em] text-dim mb-2">
+                Polarity
+              </p>
+              <p
+                class="font-display text-5xl md:text-6xl"
+                :class="result.invert_polarity ? 'text-alert' : 'text-trace'"
+              >
+                <span x-text="result.invert_polarity ? 'flip' : 'keep'"></span>
+              </p>
+              <p class="text-[11px] text-dim mt-2">
+                <span x-show="result.invert_polarity">Use the Gain plugin&rsquo;s &empty; button on the close mic</span>
+                <span x-show="!result.invert_polarity">No inversion required</span>
+              </p>
+            </div>
+          </div>
+
+          <!-- Confidence meter -->
+          <div class="mb-12">
+            <div class="flex items-baseline justify-between mb-2">
+              <p class="text-[10px] uppercase tracking-[0.3em] text-dim">
+                Correlation confidence
+              </p>
+              <p class="text-[11px] font-mono" x-text="confidenceText()"></p>
+            </div>
+            <div class="meter-track relative h-3 border border-slate700">
+              <div
+                class="absolute inset-y-0 left-0 bg-signal transition-all duration-500"
+                :style="`width: ${Math.min(result.confidence * 100, 100)}%`"
+              ></div>
+            </div>
+            <p class="text-[11px] text-bone/60 mt-3" x-text="confidenceAdvice()"></p>
+          </div>
+
+          <!-- Technical details -->
+          <details class="group border-t border-slate700/60 pt-6">
+            <summary
+              class="cursor-pointer text-[10px] uppercase tracking-[0.3em] text-dim hover:text-bone transition flex items-center gap-3"
+            >
+              <span class="group-open:rotate-90 transition inline-block">&rsaquo;</span>
+              Technical details
+            </summary>
+            <div class="mt-6 grid sm:grid-cols-2 gap-x-12 gap-y-4 text-[12px]">
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Input A</span>
+                <span class="font-mono truncate ml-4" x-text="result.file_a"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Input B</span>
+                <span class="font-mono truncate ml-4" x-text="result.file_b"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Duration A</span>
+                <span class="font-mono" x-text="result.duration_a_s + ' s'"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Duration B</span>
+                <span class="font-mono" x-text="result.duration_b_s + ' s'"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Raw lag (b vs a)</span>
+                <span class="font-mono" x-text="result.lag_samples + ' samples'"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Sub-sample</span>
+                <span class="font-mono" x-text="result.sub_sample_lag.toFixed(3)"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Analysis SR</span>
+                <span class="font-mono" x-text="result.sample_rate + ' Hz'"></span>
+              </div>
+              <div class="flex justify-between border-b border-slate700/40 pb-2">
+                <span class="text-dim uppercase tracking-wider">Confidence</span>
+                <span class="font-mono" x-text="result.confidence.toFixed(4)"></span>
+              </div>
+            </div>
+          </details>
+        </section>
+      </template>
+
+      <!-- Footer notes -->
+      <section class="mt-20 grid md:grid-cols-3 gap-8 text-[12px] leading-relaxed text-bone/60">
+        <div>
+          <p class="text-[10px] uppercase tracking-[0.3em] text-signal mb-3">
+            01 / What it does
+          </p>
+          <p>
+            Computes the cross-correlation of the two signals via FFT. The
+            lag at peak correlation is the time offset; a negative peak
+            means polarity is inverted.
+          </p>
+        </div>
+        <div>
+          <p class="text-[10px] uppercase tracking-[0.3em] text-signal mb-3">
+            02 / How to use it
+          </p>
+          <p>
+            Bounce 10&ndash;30 seconds of both tracks from your DAW &mdash;
+            any portion with clear transients works best. The tool tells you
+            which file is the close mic, so labelling isn&rsquo;t required.
+          </p>
+        </div>
+        <div>
+          <p class="text-[10px] uppercase tracking-[0.3em] text-signal mb-3">
+            03 / Verify by ear
+          </p>
+          <p>
+            Apply the delay in a Sample Delay plugin, then null-test: flip
+            polarity, solo both mics, and listen for maximum cancellation.
+            That confirms the alignment is genuinely locked in.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      function unphase() {
+        return {
+          files: { a: null, b: null },
+          dragging: { a: false, b: false },
+          loading: false,
+          result: null,
+          error: null,
+
+          get ready() {
+            return !!(this.files.a && this.files.b);
+          },
+
+          get statusText() {
+            if (this.loading) return 'Status: Processing';
+            if (this.error) return 'Status: Error';
+            if (this.result) return 'Status: Complete';
+            if (this.ready) return 'Status: Armed';
+            return 'Status: Idle';
+          },
+
+          handleDrop(event, slot) {
+            this.dragging[slot] = false;
+            const f = event.dataTransfer.files[0];
+            if (f) this.files[slot] = f;
+          },
+
+          handlePick(event, slot) {
+            const f = event.target.files[0];
+            if (f) this.files[slot] = f;
+          },
+
+          formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+          },
+
+          async analyze() {
+            this.loading = true;
+            this.error = null;
+            this.result = null;
+            const form = new FormData();
+            form.append('file_a', this.files.a);
+            form.append('file_b', this.files.b);
+            try {
+              const r = await fetch('/api/align', { method: 'POST', body: form });
+              const data = await r.json();
+              if (!r.ok) {
+                this.error = data.detail || 'Request failed.';
+              } else {
+                this.result = data;
+              }
+            } catch (e) {
+              this.error = 'Network error: ' + e.message;
+            } finally {
+              this.loading = false;
+            }
+          },
+
+          closeMicName() {
+            if (!this.result) return '';
+            if (this.result.close_mic === 'aligned') return 'already aligned';
+            return this.result.close_mic;
+          },
+
+          closeMicExplanation() {
+            if (!this.result) return '';
+            if (this.result.close_mic === 'aligned') {
+              return 'The two recordings are already time-aligned. Only polarity may need attention.';
+            }
+            const other =
+              this.result.close_mic === this.result.file_a
+                ? this.result.file_b
+                : this.result.file_a;
+            return `It arrived ${this.result.delay_ms.toFixed(2)} ms earlier than ${other}, consistent with being nearer the source.`;
+          },
+
+          confidenceText() {
+            if (!this.result) return '';
+            return (this.result.confidence * 100).toFixed(1) + '%';
+          },
+
+          confidenceAdvice() {
+            if (!this.result) return '';
+            const c = this.result.confidence;
+            if (c > 0.5) return 'Strong correlation — result is reliable.';
+            if (c > 0.2)
+              return 'Moderate correlation — verify by ear with a null test.';
+            return 'Weak correlation — the mics may be hearing very different content. Treat as a starting point, not a final value.';
+          },
+        };
+      }
+    </script>
+  </body>
+</html>

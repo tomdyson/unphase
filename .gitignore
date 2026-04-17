@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+.DS_Store
+*.wav
+*.aiff
+*.flac
+*.mp3
+.uv-cache/
+.claude/settings.local.json

@@ -1,0 +1,35 @@
+# fly.toml — pairs with the Dockerfile and app/ layout.
+
+app = "unphase"
+primary_region = "lhr"
+
+[build]
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 20
+    soft_limit = 15
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+# FFT cross-correlation on longer files can need a bit of memory.
+# 1 CPU / 1 GB is plenty for two ~30s analysis windows.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
