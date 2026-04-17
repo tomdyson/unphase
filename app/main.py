@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .align import align, decode_to_mono
 
@@ -32,64 +34,120 @@ async def healthz() -> dict[str, str]:
 async def api_align(
     file_a: UploadFile = File(...),
     file_b: UploadFile = File(...),
-) -> JSONResponse:
-    """Accept two audio files and return alignment info."""
-    tmp_a: str | None = None
-    tmp_b: str | None = None
+) -> StreamingResponse:
+    """Accept two audio files and stream phase events as NDJSON.
+
+    Each line of the response body is a JSON object describing one phase
+    transition. The final line's `phase` is either `result` (success, with
+    full payload) or `error` (with `detail`). Events emitted in order:
+
+      {"phase": "decode", "file": "a"}
+      {"phase": "decode", "file": "b"}
+      {"phase": "check"}
+      {"phase": "verify"}
+      {"phase": "result", ...payload}
+    """
+    tmp_a = await _save_upload(file_a)
     try:
-        tmp_a = await _save_upload(file_a)
         tmp_b = await _save_upload(file_b)
+    except Exception:
+        if os.path.exists(tmp_a):
+            os.unlink(tmp_a)
+        raise
 
+    async def stream():
         try:
-            audio_a = decode_to_mono(tmp_a, TARGET_SR)
-            audio_b = decode_to_mono(tmp_b, TARGET_SR)
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Could not decode audio. ffmpeg says: {exc}",
-            )
+            async for line in _run_pipeline(tmp_a, tmp_b, file_a.filename, file_b.filename):
+                yield line
+        finally:
+            for p in (tmp_a, tmp_b):
+                if p and os.path.exists(p):
+                    os.unlink(p)
 
-        min_len = min(len(audio_a), len(audio_b))
-        if min_len < TARGET_SR:
-            raise HTTPException(
-                status_code=400,
-                detail="Each file must contain at least 1 second of audio.",
-            )
+    return StreamingResponse(
+        stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
-        result = align(
+
+async def _run_pipeline(
+    tmp_a: str, tmp_b: str, name_a: str | None, name_b: str | None
+):
+    def event(**kw) -> bytes:
+        return (json.dumps(kw) + "\n").encode()
+
+    try:
+        yield event(phase="decode", file="a")
+        audio_a = await asyncio.to_thread(decode_to_mono, tmp_a, TARGET_SR)
+
+        yield event(phase="decode", file="b")
+        audio_b = await asyncio.to_thread(decode_to_mono, tmp_b, TARGET_SR)
+    except RuntimeError as exc:
+        yield event(phase="error", detail=f"Could not decode audio. ffmpeg says: {exc}")
+        return
+
+    if min(len(audio_a), len(audio_b)) < TARGET_SR:
+        yield event(phase="error", detail="Each file must contain at least 1 second of audio.")
+        return
+
+    # align() is sync and CPU-bound. Run it in a thread and forward its
+    # phase callbacks back here via a threadsafe queue.
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def on_phase(name: str) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, name)
+
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            align,
             audio_a,
             audio_b,
-            sample_rate=TARGET_SR,
-            max_ms=50.0,
-            label_a=file_a.filename or "file A",
-            label_b=file_b.filename or "file B",
+            TARGET_SR,
+            50.0,
+            name_a or "file A",
+            name_b or "file B",
+            on_phase,
         )
+    )
 
-        return JSONResponse(
-            {
-                "file_a": file_a.filename,
-                "file_b": file_b.filename,
-                "duration_a_s": round(len(audio_a) / TARGET_SR, 2),
-                "duration_b_s": round(len(audio_b) / TARGET_SR, 2),
-                "sample_rate": result.sample_rate,
-                "lag_samples": result.lag_samples,
-                "sub_sample_lag": round(result.sub_sample_lag, 3),
-                "invert_polarity": result.invert_polarity,
-                "confidence": round(result.confidence, 4),
-                "peak_corr": round(result.peak_corr, 4),
-                "peak_over_median": round(result.peak_over_median, 2),
-                "envelope_lag_samples": result.envelope_lag_samples,
-                "sanity_ok": result.sanity_ok,
-                "close_mic": result.close_mic,
-                "delay_samples_48k": result.delay_samples,
-                "delay_samples_44k": round(result.delay_ms * 44.1),
-                "delay_ms": round(result.delay_ms, 3),
-            }
-        )
-    finally:
-        for path in (tmp_a, tmp_b):
-            if path and os.path.exists(path):
-                os.unlink(path)
+    while not task.done() or not queue.empty():
+        try:
+            name = await asyncio.wait_for(queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            continue
+        yield event(phase=name)
+
+    try:
+        result = await task
+    except Exception as exc:
+        yield event(phase="error", detail=f"Alignment failed: {exc}")
+        return
+
+    yield event(
+        phase="result",
+        file_a=name_a,
+        file_b=name_b,
+        duration_a_s=round(len(audio_a) / TARGET_SR, 2),
+        duration_b_s=round(len(audio_b) / TARGET_SR, 2),
+        sample_rate=result.sample_rate,
+        lag_samples=result.lag_samples,
+        sub_sample_lag=round(result.sub_sample_lag, 3),
+        invert_polarity=result.invert_polarity,
+        confidence=round(result.confidence, 4),
+        peak_corr=round(result.peak_corr, 4),
+        peak_over_median=round(result.peak_over_median, 2),
+        envelope_lag_samples=result.envelope_lag_samples,
+        sanity_ok=result.sanity_ok,
+        close_mic=result.close_mic,
+        delay_samples_48k=result.delay_samples,
+        delay_samples_44k=round(result.delay_ms * 44.1),
+        delay_ms=round(result.delay_ms, 3),
+    )
 
 
 async def _save_upload(upload: UploadFile) -> str:

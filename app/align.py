@@ -86,13 +86,22 @@ def align(
     max_ms: float = 50.0,
     label_a: str = "a",
     label_b: str = "b",
+    on_phase=None,
 ) -> AlignmentResult:
     """Find the optimal lag and polarity to align audio_b with audio_a.
 
     The algorithm works out which file is the close mic automatically from
     the sign of the lag: whichever signal arrived earlier is the close mic,
     since spot mics sit nearer the source than the reference pair.
+
+    `on_phase`, if supplied, is a callable that receives a phase name
+    ("check" or "verify") just before that phase runs — used by the
+    streaming API handler to push progress events to the client.
     """
+    def phase(name: str) -> None:
+        if on_phase is not None:
+            on_phase(name)
+
     max_lag = int(max_ms * 1e-3 * sample_rate)
 
     n = min(len(audio_a), len(audio_b))
@@ -104,6 +113,7 @@ def align(
     a_norm = _normalize(a)
     b_norm = _normalize(b)
 
+    phase("check")
     corr = correlate(a_norm, b_norm, mode="full", method="fft")
     corr /= len(a_norm)
 
@@ -141,6 +151,7 @@ def align(
     # Map prominence to a 0-1 strength. peak/median ≈ 1 → 0, ≈ 10 → 0.9.
     confidence = 1.0 - 1.0 / max(peak_over_median, 1.0)
 
+    phase("verify")
     # Envelope sanity check: compute a Hilbert-envelope coarse alignment.
     # It ignores phase detail so it can't lock onto pitch-period sidelobes.
     # If it disagrees with the fine correlator by more than 5 ms, something

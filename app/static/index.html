@@ -222,22 +222,57 @@
       </section>
 
       <!-- Action bar -->
-      <section class="flex flex-col sm:flex-row sm:items-center gap-4 mb-12">
+      <section class="flex flex-col sm:flex-row sm:items-center gap-4 mb-8">
         <button
           class="px-8 py-4 bg-signal text-ink font-mono text-[11px] uppercase tracking-[0.3em] font-bold disabled:bg-slate700 disabled:text-dim transition hover:bg-signal/80"
           :disabled="!ready || loading"
           @click="analyze"
         >
           <span x-show="!loading">&rarr; Analyze</span>
-          <span x-show="loading">&middot;&middot;&middot; computing</span>
+          <span x-show="loading">&middot;&middot;&middot; running</span>
         </button>
         <p class="text-[11px] uppercase tracking-[0.2em] text-dim">
           <span x-show="!ready && !loading">Load both inputs to continue</span>
           <span x-show="ready && !loading && !result">Ready</span>
-          <span x-show="loading">Decoding &amp; cross-correlating</span>
+          <span x-show="loading && currentPhase" x-text="phaseStatusText()"></span>
           <span x-show="result" class="text-signal">Result below</span>
           <span x-show="error" class="text-alert" x-text="error"></span>
         </p>
+      </section>
+
+      <!-- Phase checklist -->
+      <section class="mb-12" x-show="loading || error">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px] uppercase tracking-[0.2em]">
+          <template x-for="(p, i) in phases" :key="p.key">
+            <div
+              class="border border-slate700/60 px-4 py-3 flex items-center gap-3 transition"
+              :class="{
+                'bg-slate850 border-signal/60 text-signal': phaseStatus(p.key) === 'active',
+                'bg-carbon text-bone/70': phaseStatus(p.key) === 'done',
+                'bg-carbon text-dim/60': phaseStatus(p.key) === 'pending',
+              }"
+            >
+              <span class="font-mono text-[10px] text-dim" x-text="String(i+1).padStart(2,'0')"></span>
+              <span class="flex-1 truncate">
+                <span x-text="p.label"></span>
+                <template x-if="phaseStatus(p.key) === 'active' && p.key === 'upload'">
+                  <span class="text-dim normal-case tracking-normal ml-2" x-text="Math.round(uploadPct*100)+'%'"></span>
+                </template>
+                <template x-if="phaseStatus(p.key) === 'active' && p.key === 'convert' && currentDecodeFile">
+                  <span class="text-dim normal-case tracking-normal ml-2" x-text="currentDecodeFile === 'a' ? '1/2' : '2/2'"></span>
+                </template>
+              </span>
+              <span class="flex-shrink-0 w-4 text-right">
+                <span x-show="phaseStatus(p.key) === 'done'" class="text-trace">&#x2714;</span>
+                <span
+                  x-show="phaseStatus(p.key) === 'active'"
+                  class="led inline-block w-1.5 h-1.5 rounded-full bg-signal text-signal align-middle"
+                ></span>
+                <span x-show="phaseStatus(p.key) === 'pending'" class="text-dim/40">&middot;</span>
+              </span>
+            </div>
+          </template>
+        </div>
       </section>
 
       <!-- Results panel -->
@@ -431,6 +466,17 @@
           result: null,
           error: null,
 
+          // Phase tracking
+          phases: [
+            { key: 'upload',  label: 'upload'   },
+            { key: 'convert', label: 'convert'  },
+            { key: 'check',   label: 'check'    },
+            { key: 'verify',  label: 'verify'   },
+          ],
+          currentPhase: null,      // one of the phase keys, or 'done'
+          currentDecodeFile: null, // 'a' or 'b' during convert
+          uploadPct: 0,
+
           get ready() {
             return !!(this.files.a && this.files.b);
           },
@@ -441,6 +487,27 @@
             if (this.result) return 'Status: Complete';
             if (this.ready) return 'Status: Armed';
             return 'Status: Idle';
+          },
+
+          phaseStatus(key) {
+            if (!this.loading && !this.result && !this.error) return 'pending';
+            if (this.currentPhase === 'done') return 'done';
+            const curIdx = this.phases.findIndex((p) => p.key === this.currentPhase);
+            const idx = this.phases.findIndex((p) => p.key === key);
+            if (curIdx < 0) return 'pending';
+            if (idx < curIdx) return 'done';
+            if (idx === curIdx) return 'active';
+            return 'pending';
+          },
+
+          phaseStatusText() {
+            const key = this.currentPhase;
+            if (!key) return '';
+            if (key === 'upload') return `Uploading ${Math.round(this.uploadPct*100)}%`;
+            if (key === 'convert') return `Decoding file ${this.currentDecodeFile === 'b' ? '2/2' : '1/2'}`;
+            if (key === 'check')   return 'Cross-correlating';
+            if (key === 'verify')  return 'Envelope sanity check';
+            return '';
           },
 
           handleDrop(event, slot) {
@@ -460,25 +527,67 @@
             return (bytes / 1024 / 1024).toFixed(1) + ' MB';
           },
 
-          async analyze() {
+          analyze() {
             this.loading = true;
             this.error = null;
             this.result = null;
+            this.currentPhase = 'upload';
+            this.currentDecodeFile = null;
+            this.uploadPct = 0;
+
             const form = new FormData();
             form.append('file_a', this.files.a);
             form.append('file_b', this.files.b);
-            try {
-              const r = await fetch('/api/align', { method: 'POST', body: form });
-              const data = await r.json();
-              if (!r.ok) {
-                this.error = data.detail || 'Request failed.';
-              } else {
-                this.result = data;
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/align');
+            xhr.responseType = '';
+
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable) this.uploadPct = e.loaded / e.total;
+            };
+            xhr.upload.onload = () => { this.uploadPct = 1; };
+
+            let parsedOffset = 0;
+            const consumeLines = () => {
+              const text = xhr.responseText;
+              while (true) {
+                const nl = text.indexOf('\n', parsedOffset);
+                if (nl < 0) break;
+                const line = text.slice(parsedOffset, nl);
+                parsedOffset = nl + 1;
+                if (!line.trim()) continue;
+                let evt;
+                try { evt = JSON.parse(line); } catch { continue; }
+                this.handleEvent(evt);
               }
-            } catch (e) {
-              this.error = 'Network error: ' + e.message;
-            } finally {
+            };
+            xhr.onprogress = consumeLines;
+            xhr.onload = () => {
+              consumeLines();
               this.loading = false;
+              if (!this.result && !this.error) {
+                this.error = 'No result received from server.';
+              }
+            };
+            xhr.onerror = () => {
+              this.loading = false;
+              this.error = 'Network error.';
+            };
+            xhr.send(form);
+          },
+
+          handleEvent(evt) {
+            if (evt.phase === 'decode') {
+              this.currentPhase = 'convert';
+              this.currentDecodeFile = evt.file;
+            } else if (evt.phase === 'check' || evt.phase === 'verify') {
+              this.currentPhase = evt.phase;
+            } else if (evt.phase === 'result') {
+              this.currentPhase = 'done';
+              this.result = evt;
+            } else if (evt.phase === 'error') {
+              this.error = evt.detail || 'Unknown error';
             }
           },
 
