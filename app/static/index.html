@@ -340,7 +340,7 @@
                     ></canvas>
                     <div
                       class="meta"
-                      x-text="waveMode === 'aligned' ? '+' + selectedResult.delay_ms.toFixed(2) + ' ms' : '— ms'"
+                      x-text="waveMode === 'aligned' ? '+' + selectedResult.delay_ms.toFixed(2) + ' ms applied' : (selectedResult.close_is_reference ? '+' : '−') + selectedResult.delay_ms.toFixed(2) + ' ms'"
                     ></div>
                   </div>
                 </div>
@@ -351,7 +351,7 @@
                 <div class="spatial">
                   <div class="eyebrow">Spatial — inferred</div>
                   <div class="stage">
-                    <svg viewBox="0 0 600 120" preserveAspectRatio="none">
+                    <svg viewBox="0 0 600 120">
                       <line x1="30" y1="60" x2="570" y2="60" stroke="#d9d6c8" stroke-dasharray="2 4" />
                       <circle cx="60" cy="60" r="8" fill="var(--ink)" />
                       <text x="60" y="92" text-anchor="middle" font-size="10" font-family="JetBrains Mono" fill="#6b6a63">SOURCE</text>
@@ -860,8 +860,11 @@
 
           waveShiftPx() {
             const r = this.selectedResult;
-            if (!r || this.waveMode !== 'aligned') return 0;
-            return Math.round(Math.min(40, r.delay_ms * 3));
+            if (!r || this.waveMode !== 'original') return 0;
+            // As-recorded offset: target drawn later (→) if it arrived after ref,
+            // earlier (←) if it was the close mic.
+            const sign = r.close_is_reference ? 1 : -1;
+            return sign * Math.round(Math.min(40, r.delay_ms * 3));
           },
 
           drawWave(canvas, peaks, color, offsetPx, invert) {
