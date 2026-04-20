@@ -3,647 +3,675 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>UNPHASE / a mic alignment tool</title>
+    <title>unphase — mic alignment</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Fraunces:opsz,wght,SOFT@9..144,300;9..144,400;9..144,500;9..144,700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/styles.css" />
     <script
       defer
       src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"
     ></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            fontFamily: {
-              mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
-              display: ['Fraunces', 'ui-serif', 'serif'],
-            },
-            colors: {
-              ink: '#0a0a0a',
-              carbon: '#141414',
-              slate850: '#1c1c1c',
-              slate700: '#2a2a2a',
-              dim: '#6b6b6b',
-              bone: '#e8e4da',
-              signal: '#f4c542', // amber LED
-              alert: '#d95c3a', // warning red
-              trace: '#7dd3c0', // cyan scope line
-            },
-          },
-        },
-      };
-    </script>
-    <style>
-      html, body { background: #0a0a0a; }
-      body {
-        background-image:
-          radial-gradient(circle at 20% -10%, rgba(244, 197, 66, 0.04), transparent 40%),
-          radial-gradient(circle at 90% 110%, rgba(125, 211, 192, 0.03), transparent 40%);
-      }
-      /* Subtle grain */
-      .grain::before {
-        content: '';
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' /%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E");
-        opacity: 0.05;
-        mix-blend-mode: overlay;
-        z-index: 100;
-      }
-      /* Corner brackets on the drop zones */
-      .corners::before,
-      .corners::after,
-      .corners > .tl::before,
-      .corners > .tl::after {
-        content: '';
-        position: absolute;
-        width: 14px;
-        height: 14px;
-        border-color: #6b6b6b;
-        transition: border-color 200ms ease;
-      }
-      .corners::before { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
-      .corners::after  { top: -1px; right: -1px; border-top: 1px solid; border-right: 1px solid; }
-      .corners > .tl::before { bottom: -1px; left: -1px; border-bottom: 1px solid; border-left: 1px solid; }
-      .corners > .tl::after  { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
-      .corners.active::before,
-      .corners.active::after,
-      .corners.active > .tl::before,
-      .corners.active > .tl::after {
-        border-color: #f4c542;
-      }
-      /* LED blink */
-      @keyframes led-pulse {
-        0%, 100% { opacity: 1; box-shadow: 0 0 8px currentColor; }
-        50% { opacity: 0.4; box-shadow: 0 0 4px currentColor; }
-      }
-      .led { animation: led-pulse 1.2s ease-in-out infinite; }
-      /* Scanline on results panel */
-      @keyframes scan {
-        0% { transform: translateY(-100%); }
-        100% { transform: translateY(100%); }
-      }
-      .scanline {
-        position: absolute;
-        inset: 0;
-        overflow: hidden;
-        pointer-events: none;
-      }
-      .scanline::after {
-        content: '';
-        position: absolute;
-        left: 0;
-        right: 0;
-        height: 40%;
-        background: linear-gradient(
-          180deg,
-          transparent,
-          rgba(244, 197, 66, 0.04),
-          transparent
-        );
-        animation: scan 4s linear infinite;
-      }
-      /* Meter bar */
-      .meter-track {
-        background: repeating-linear-gradient(
-          90deg,
-          #2a2a2a 0,
-          #2a2a2a 2px,
-          transparent 2px,
-          transparent 5px
-        );
-      }
-      /* Input file hidden */
-      input[type='file'] { display: none; }
-      /* Hover cursor on drop zones */
-      .dropzone { cursor: pointer; }
-      .dropzone:hover { background-color: rgba(244, 197, 66, 0.02); }
-    </style>
   </head>
-  <body
-    class="grain min-h-screen text-bone font-mono antialiased selection:bg-signal selection:text-ink"
-    x-data="unphase()"
-  >
-    <!-- Header bar -->
-    <header
-      class="border-b border-slate700/60 px-6 py-4 flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-dim"
-    >
-      <div class="flex items-center gap-3">
-        <span
-          class="led inline-block w-1.5 h-1.5 rounded-full bg-signal text-signal"
-        ></span>
-        <span>UNPHASE &middot; v1.0</span>
-      </div>
-      <div class="hidden sm:block" x-text="statusText"></div>
-      <div>48 KHZ / MONO / FFT</div>
-    </header>
-
-    <main class="max-w-6xl mx-auto px-6 pt-16 pb-24">
-      <!-- Title block -->
-      <section class="mb-16">
-        <p class="text-[11px] uppercase tracking-[0.3em] text-dim mb-6">
-          Audio Engineering Tools &mdash; No. 1
-        </p>
-        <h1
-          class="font-display font-light text-6xl sm:text-7xl md:text-8xl leading-[0.9] tracking-tight mb-8"
-        >
-          <span class="italic font-light">un</span><span class="font-normal">phase</span>
-        </h1>
-        <p class="max-w-xl text-sm leading-relaxed text-bone/70">
-          Drop two recordings of the same moment — a stereo pair and a spot
-          mic, say — and the tool returns the sample-accurate delay and
-          polarity needed to align them. It works out which file is the close
-          mic from the correlation lag, so you don&rsquo;t need to label them.
-        </p>
-      </section>
-
-      <!-- Drop zones -->
-      <section class="grid md:grid-cols-2 gap-6 mb-6">
-        <template x-for="slot in ['a', 'b']" :key="slot">
-          <div
-            class="dropzone corners relative bg-carbon border border-slate700/60 p-8 min-h-[220px] flex flex-col"
-            :class="{ 'active': files[slot] || dragging[slot] }"
-            @click="$refs['input_' + slot].click()"
-            @dragover.prevent="dragging[slot] = true"
-            @dragenter.prevent="dragging[slot] = true"
-            @dragleave.prevent="dragging[slot] = false"
-            @drop.prevent="handleDrop($event, slot)"
-          >
-            <span class="tl"></span>
-            <input
-              type="file"
-              :ref="'input_' + slot"
-              accept="audio/*"
-              @change="handlePick($event, slot)"
-            />
-            <div
-              class="flex items-center justify-between text-[10px] uppercase tracking-[0.25em] text-dim mb-4"
-            >
-              <span>Input <span x-text="slot.toUpperCase()"></span></span>
-              <span x-show="files[slot]" class="text-signal">&#x25CF; loaded</span>
-              <span x-show="!files[slot]">&mdash; empty &mdash;</span>
-            </div>
-            <div class="flex-1 flex items-center justify-center text-center">
-              <template x-if="!files[slot]">
-                <div>
-                  <p class="font-display italic text-2xl text-bone/80 mb-2">
-                    drop an audio file
-                  </p>
-                  <p class="text-[11px] text-dim">
-                    or click to browse &nbsp;&middot;&nbsp; wav, aiff, flac,
-                    mp3
-                  </p>
-                </div>
-              </template>
-              <template x-if="files[slot]">
-                <div class="w-full">
-                  <p
-                    class="font-display text-xl text-bone truncate mb-1"
-                    x-text="files[slot].name"
-                  ></p>
-                  <p class="text-[11px] text-dim" x-text="formatSize(files[slot].size)"></p>
-                  <button
-                    class="mt-3 text-[10px] uppercase tracking-[0.25em] text-dim hover:text-alert transition"
-                    @click.stop="files[slot] = null"
-                  >
-                    [ remove ]
-                  </button>
-                </div>
-              </template>
-            </div>
-          </div>
-        </template>
-      </section>
-
-      <!-- Action bar -->
-      <section class="flex flex-col sm:flex-row sm:items-center gap-4 mb-8">
-        <button
-          class="px-8 py-4 bg-signal text-ink font-mono text-[11px] uppercase tracking-[0.3em] font-bold disabled:bg-slate700 disabled:text-dim transition hover:bg-signal/80"
-          :disabled="!ready || loading"
-          @click="analyze"
-        >
-          <span x-show="!loading">&rarr; Analyze</span>
-          <span x-show="loading">&middot;&middot;&middot; running</span>
-        </button>
-        <p class="text-[11px] uppercase tracking-[0.2em] text-dim">
-          <span x-show="!ready && !loading">Load both inputs to continue</span>
-          <span x-show="ready && !loading && !result">Ready</span>
-          <span x-show="loading && currentPhase" x-text="phaseStatusText()"></span>
-          <span x-show="result" class="text-signal">Result below</span>
-          <span x-show="error" class="text-alert" x-text="error"></span>
-        </p>
-      </section>
-
-      <!-- Phase checklist -->
-      <section class="mb-12" x-show="loading || error">
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px] uppercase tracking-[0.2em]">
-          <template x-for="(p, i) in phases" :key="p.key">
-            <div
-              class="border border-slate700/60 px-4 py-3 flex items-center gap-3 transition"
-              :class="{
-                'bg-slate850 border-signal/60 text-signal': phaseStatus(p.key) === 'active',
-                'bg-carbon text-bone/70': phaseStatus(p.key) === 'done',
-                'bg-carbon text-dim/60': phaseStatus(p.key) === 'pending',
-              }"
-            >
-              <span class="font-mono text-[10px] text-dim" x-text="String(i+1).padStart(2,'0')"></span>
-              <span class="flex-1 truncate">
-                <span x-text="p.label"></span>
-                <template x-if="phaseStatus(p.key) === 'active' && p.key === 'upload'">
-                  <span class="text-dim normal-case tracking-normal ml-2" x-text="Math.round(uploadPct*100)+'%'"></span>
-                </template>
-                <template x-if="phaseStatus(p.key) === 'active' && p.key === 'convert' && currentDecodeFile">
-                  <span class="text-dim normal-case tracking-normal ml-2" x-text="currentDecodeFile === 'a' ? '1/2' : '2/2'"></span>
-                </template>
-              </span>
-              <span class="flex-shrink-0 w-4 text-right">
-                <span x-show="phaseStatus(p.key) === 'done'" class="text-trace">&#x2714;</span>
-                <span
-                  x-show="phaseStatus(p.key) === 'active'"
-                  class="led inline-block w-1.5 h-1.5 rounded-full bg-signal text-signal align-middle"
-                ></span>
-                <span x-show="phaseStatus(p.key) === 'pending'" class="text-dim/40">&middot;</span>
-              </span>
-            </div>
+  <body x-data="unphase()" x-cloak>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="mark">U</div>
+          <div class="name">unphase</div>
+          <div class="ver">v2 · batch</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="meta">
+          <span class="hstack"><span class="dot"></span> session</span>
+          <span x-text="files.length + ' file' + (files.length === 1 ? '' : 's')"></span>
+          <template x-if="refFile">
+            <span class="hstack"><span>·</span><span x-text="'ref: ' + truncate(refFile.name, 32)"></span></span>
           </template>
         </div>
-      </section>
-
-      <!-- Results panel -->
-      <template x-if="result">
-        <section
-          class="relative bg-slate850 border border-slate700/60 p-8 md:p-12"
+        <button
+          class="btn"
+          :disabled="!hasResults"
+          @click="exportCsv()"
+          title="Download session results as CSV"
         >
-          <div class="scanline"></div>
-          <p
-            class="text-[10px] uppercase tracking-[0.3em] text-dim mb-10"
+          <span x-html="icons.download"></span> Export session
+        </button>
+      </header>
+
+      <div class="main">
+        <!-- LEFT PANE -->
+        <aside class="left-pane">
+          <div class="section-title">
+            <div class="eyebrow">Session files</div>
+            <button
+              class="btn ghost small"
+              @click="$refs.picker.click()"
+              :disabled="running"
+            >
+              <span x-html="icons.upload"></span> Add files
+            </button>
+          </div>
+
+          <div
+            class="dropzone"
+            :class="{ drag: dragging }"
+            @dragover.prevent="dragging = true"
+            @dragleave.prevent="dragging = false"
+            @drop.prevent="handleDrop($event)"
+            @click="$refs.picker.click()"
           >
-            Output &mdash; readout
-          </p>
-
-          <!-- Verdict -->
-          <div class="mb-12">
-            <p class="text-[11px] uppercase tracking-[0.25em] text-dim mb-2">
-              The close mic is
-            </p>
-            <p
-              class="font-display text-3xl md:text-5xl text-signal break-all"
-              x-text="closeMicName()"
-            ></p>
-            <p class="text-sm text-bone/60 mt-3" x-text="closeMicExplanation()"></p>
+            <span x-html="icons.upload"></span>
+            <div class="big">Drop audio files to add</div>
+            <div class="sub mono">WAV · AIFF · FLAC · MP3 · M4A · up to 200 MB each</div>
+            <input
+              x-ref="picker"
+              type="file"
+              multiple
+              hidden
+              accept="audio/*,.wav,.aiff,.flac,.mp3,.m4a"
+              @change="handlePick($event)"
+            />
           </div>
 
-          <!-- Primary numbers -->
-          <div class="grid sm:grid-cols-2 gap-x-12 gap-y-8 mb-12">
-            <div>
-              <p class="text-[10px] uppercase tracking-[0.3em] text-dim mb-2">
-                Delay close mic by
-              </p>
-              <p class="font-display text-5xl md:text-6xl">
-                <span x-text="result.delay_ms.toFixed(2)"></span><span class="text-2xl text-dim"> ms</span>
-              </p>
-              <p class="text-[11px] text-dim mt-2 font-mono">
-                <span x-text="result.delay_samples_48k"></span> samples @ 48 kHz
-                &middot;
-                <span x-text="result.delay_samples_44k"></span> @ 44.1 kHz
-              </p>
-            </div>
-            <div>
-              <p class="text-[10px] uppercase tracking-[0.3em] text-dim mb-2">
-                Polarity
-              </p>
-              <p
-                class="font-display text-5xl md:text-6xl"
-                :class="result.invert_polarity ? 'text-alert' : 'text-trace'"
-              >
-                <span x-text="result.invert_polarity ? 'flip' : 'keep'"></span>
-              </p>
-              <p class="text-[11px] text-dim mt-2">
-                <span x-show="result.invert_polarity">Use the Gain plugin&rsquo;s &empty; button on the close mic</span>
-                <span x-show="!result.invert_polarity">No inversion required</span>
-              </p>
-            </div>
-          </div>
-
-          <!-- Confidence meter -->
-          <div class="mb-12">
-            <div class="flex items-baseline justify-between mb-2">
-              <p class="text-[10px] uppercase tracking-[0.3em] text-dim">
-                Correlation confidence
-              </p>
-              <p class="text-[11px] font-mono" x-text="confidenceText()"></p>
-            </div>
-            <div class="meter-track relative h-3 border border-slate700">
+          <div class="files">
+            <template x-for="(f, i) in files" :key="f.id">
               <div
-                class="absolute inset-y-0 left-0 transition-all duration-500"
-                :class="confidenceColor()"
-                :style="`width: ${Math.min(result.confidence * 100, 100)}%`"
-              ></div>
-            </div>
-            <p class="text-[11px] text-bone/60 mt-3" x-text="confidenceAdvice()"></p>
-            <p class="text-[11px] text-dim mt-1 font-mono">
-              peak <span x-text="result.peak_corr.toFixed(3)"></span> &middot;
-              peak/noise-floor <span x-text="result.peak_over_median.toFixed(1)"></span>&times;
-            </p>
-            <template x-if="!result.sanity_ok">
-              <div class="mt-4 border border-alert/60 bg-alert/10 px-4 py-3 text-[11px] text-alert/90 leading-relaxed">
-                <span class="uppercase tracking-[0.2em] text-alert font-bold">⚠ sanity check failed &middot; </span>
-                The envelope-based coarse alignment disagrees with the fine
-                correlator by
-                <span x-text="Math.abs(result.envelope_lag_samples - result.lag_samples)"></span>
-                samples. The fine peak may be a pitch-period sidelobe rather
-                than the true onset. Treat this delay as a guess and verify by
-                ear.
+                class="file-row"
+                :class="{
+                  ref: f.id === refId,
+                  selected: f.id === selectedId && f.id !== refId,
+                }"
+                @click="selectFile(f.id)"
+              >
+                <div class="idx mono" x-text="String(i + 1).padStart(2, '0')"></div>
+                <div class="name">
+                  <div class="t" x-text="f.name"></div>
+                  <div class="m">
+                    <span x-text="formatSize(f.size)"></span>
+                    <template x-if="f.duration">
+                      <span><span>·</span> <span x-text="formatDuration(f.duration)"></span></span>
+                    </template>
+                    <template x-if="f.channels">
+                      <span><span>·</span> <span x-text="channelLabel(f.channels)"></span></span>
+                    </template>
+                  </div>
+                </div>
+                <div>
+                  <template x-if="f.id === refId">
+                    <span class="status ok">reference</span>
+                  </template>
+                  <template x-if="f.id !== refId">
+                    <span class="status" :class="fileStatusClass(f)" x-text="fileStatusLabel(f)"></span>
+                  </template>
+                </div>
+                <div class="hstack" style="gap: 2px">
+                  <button
+                    class="icon-btn"
+                    :class="{ active: f.id === refId }"
+                    :title="f.id === refId ? 'Reference track' : 'Pin as reference'"
+                    @click.stop="pinReference(f.id)"
+                    :disabled="running"
+                  >
+                    <span x-html="icons.pin"></span>
+                  </button>
+                  <button
+                    class="icon-btn"
+                    title="Remove"
+                    @click.stop="removeFile(f.id)"
+                    :disabled="running"
+                  >
+                    <span x-html="icons.x"></span>
+                  </button>
+                </div>
               </div>
             </template>
           </div>
 
-          <!-- Spatial layout diagram -->
-          <template x-if="result.close_mic !== 'aligned'">
-            <div class="mb-12">
-              <p class="text-[10px] uppercase tracking-[0.3em] text-dim mb-4">
-                Spatial layout
-              </p>
-              <div class="border border-slate700/60 bg-carbon p-6">
-                <svg viewBox="0 0 800 230" class="w-full h-auto" xmlns="http://www.w3.org/2000/svg" style="font-family: 'JetBrains Mono', monospace;">
-                  <!-- ground line -->
-                  <line x1="40" y1="165" x2="760" y2="165" stroke="#2a2a2a" stroke-width="0.5" stroke-dasharray="4 4"/>
+          <div
+            class="hstack mono"
+            style="font-size: 11px; color: var(--ink-4); justify-content: space-between; flex-wrap: wrap; gap: 6px"
+            x-show="files.length > 0"
+          >
+            <span
+              x-text="files.length + ' files · ' + (refId ? '1 reference · ' : '') + Math.max(0, files.length - (refId ? 1 : 0)) + ' to align'"
+            ></span>
+            <span>window 30 s @ 48 kHz mono · ±50 ms search</span>
+          </div>
 
-                  <!-- SOURCE -->
-                  <g transform="translate(90,110)">
-                    <path d="M -10 -12 L 4 -12 L 14 -22 L 14 22 L 4 12 L -10 12 Z" fill="#e8e4da" opacity="0.85"/>
-                    <path d="M 22 -8 Q 30 0 22 8" stroke="#f4c542" fill="none" stroke-width="1.5"/>
-                    <path d="M 34 -14 Q 48 0 34 14" stroke="#f4c542" fill="none" stroke-width="1.5" opacity="0.55"/>
-                    <path d="M 46 -20 Q 64 0 46 20" stroke="#f4c542" fill="none" stroke-width="1.5" opacity="0.28"/>
-                    <text x="4" y="58" text-anchor="middle" fill="#6b6b6b" font-size="10" letter-spacing="2">SOURCE</text>
-                  </g>
+          <div class="spacer"></div>
 
-                  <!-- Source → close dashed (unknown distance) -->
-                  <line x1="170" y1="110" x2="390" y2="110" stroke="#2a2a2a" stroke-width="1" stroke-dasharray="2 6"/>
-                  <text x="280" y="102" text-anchor="middle" fill="#6b6b6b" font-size="10" letter-spacing="1">? m</text>
+          <div class="vstack" style="gap: 10px">
+            <div class="progress" x-show="running"></div>
+            <button
+              class="btn primary"
+              style="justify-content: center"
+              :disabled="!canAnalyze"
+              @click="analyze()"
+            >
+              <template x-if="running">
+                <span x-text="'Analyzing ' + targetCount + ' track' + (targetCount === 1 ? '' : 's') + '…'"></span>
+              </template>
+              <template x-if="!running && hasResults">
+                <span class="hstack" style="gap: 8px"
+                  ><span x-html="icons.refresh"></span> Re-analyze</span
+                >
+              </template>
+              <template x-if="!running && !hasResults">
+                <span class="hstack" style="gap: 8px"
+                  ><span x-html="icons.play"></span>
+                  <span x-text="'Analyze ' + targetCount + ' track' + (targetCount === 1 ? '' : 's')"></span>
+                </span>
+              </template>
+            </button>
+            <div class="mono muted" style="font-size: 11px; text-align: center">
+              <template x-if="running">
+                <span x-text="runningStatus"></span>
+              </template>
+              <template x-if="!running">
+                <span x-text="'≈ ' + (targetCount * 0.4).toFixed(1) + ' s on our hardware'"></span>
+              </template>
+            </div>
+          </div>
+        </aside>
 
-                  <!-- CLOSE mic -->
-                  <g :transform="`translate(420,110)`">
-                    <!-- mono capsule -->
-                    <g x-show="closeChannels() <= 1">
-                      <rect x="-7" y="-32" width="14" height="22" rx="7" fill="#f4c542"/>
-                      <path d="M -13 -22 Q -13 -6 0 -6 Q 13 -6 13 -22" stroke="#f4c542" fill="none" stroke-width="1.5"/>
-                      <line x1="0" y1="-6" x2="0" y2="12" stroke="#f4c542" stroke-width="1.5"/>
-                      <line x1="-11" y1="12" x2="11" y2="12" stroke="#f4c542" stroke-width="1.5"/>
-                    </g>
-                    <!-- stereo: crossed pair -->
-                    <g x-show="closeChannels() >= 2">
-                      <g transform="translate(-9,-22) rotate(-25)">
-                        <rect x="-5" y="-12" width="10" height="18" rx="5" fill="#f4c542"/>
-                      </g>
-                      <g transform="translate(9,-22) rotate(25)">
-                        <rect x="-5" y="-12" width="10" height="18" rx="5" fill="#f4c542"/>
-                      </g>
-                      <line x1="0" y1="-8" x2="0" y2="12" stroke="#f4c542" stroke-width="1.5"/>
-                      <line x1="-11" y1="12" x2="11" y2="12" stroke="#f4c542" stroke-width="1.5"/>
-                    </g>
-                    <text x="0" y="38" text-anchor="middle" fill="#f4c542" font-size="10" letter-spacing="2">CLOSE</text>
-                    <text x="0" y="53" text-anchor="middle" fill="#6b6b6b" font-size="10" x-text="channelLabel(closeChannels())"></text>
-                  </g>
-
-                  <!-- close → far solid (measured) -->
-                  <line x1="450" y1="110" x2="610" y2="110" stroke="#f4c542" stroke-width="1" opacity="0.45"/>
-
-                  <!-- FAR mic -->
-                  <g :transform="`translate(640,110)`">
-                    <g x-show="farChannels() <= 1">
-                      <rect x="-7" y="-32" width="14" height="22" rx="7" fill="#7dd3c0"/>
-                      <path d="M -13 -22 Q -13 -6 0 -6 Q 13 -6 13 -22" stroke="#7dd3c0" fill="none" stroke-width="1.5"/>
-                      <line x1="0" y1="-6" x2="0" y2="12" stroke="#7dd3c0" stroke-width="1.5"/>
-                      <line x1="-11" y1="12" x2="11" y2="12" stroke="#7dd3c0" stroke-width="1.5"/>
-                    </g>
-                    <g x-show="farChannels() >= 2">
-                      <g transform="translate(-9,-22) rotate(-25)">
-                        <rect x="-5" y="-12" width="10" height="18" rx="5" fill="#7dd3c0"/>
-                      </g>
-                      <g transform="translate(9,-22) rotate(25)">
-                        <rect x="-5" y="-12" width="10" height="18" rx="5" fill="#7dd3c0"/>
-                      </g>
-                      <line x1="0" y1="-8" x2="0" y2="12" stroke="#7dd3c0" stroke-width="1.5"/>
-                      <line x1="-11" y1="12" x2="11" y2="12" stroke="#7dd3c0" stroke-width="1.5"/>
-                    </g>
-                    <text x="0" y="38" text-anchor="middle" fill="#7dd3c0" font-size="10" letter-spacing="2">FAR</text>
-                    <text x="0" y="53" text-anchor="middle" fill="#6b6b6b" font-size="10" x-text="channelLabel(farChannels())"></text>
-                  </g>
-
-                  <!-- Dimension line for close → far -->
-                  <g>
-                    <line x1="420" y1="195" x2="640" y2="195" stroke="#f4c542" stroke-width="1"/>
-                    <line x1="420" y1="190" x2="420" y2="200" stroke="#f4c542" stroke-width="1"/>
-                    <line x1="640" y1="190" x2="640" y2="200" stroke="#f4c542" stroke-width="1"/>
-                    <text x="530" y="215" text-anchor="middle" fill="#f4c542" font-size="11" letter-spacing="1">
-                      <tspan x-text="distanceMeters() + ' m'"></tspan>
-                      <tspan dx="8" x-text="'· ' + result.delay_ms.toFixed(2) + ' ms'"></tspan>
-                    </text>
-                  </g>
-                </svg>
-                <p class="text-[11px] text-dim mt-2 leading-relaxed">
-                  Only the close-to-far gap is measured (sound travels ≈ 34 cm
-                  per millisecond). The source-to-close distance is unknown —
-                  all we observe is how much earlier the close mic heard the
-                  signal.
-                </p>
+        <!-- RIGHT PANE -->
+        <main class="right-pane">
+          <!-- Error banner -->
+          <template x-if="error">
+            <div class="notice err" role="alert">
+              <div class="ic"><span x-html="icons.alert"></span></div>
+              <div>
+                <h4>Something went wrong</h4>
+                <p x-text="error"></p>
               </div>
             </div>
           </template>
 
-          <!-- Technical details -->
-          <details class="group border-t border-slate700/60 pt-6">
-            <summary
-              class="cursor-pointer text-[10px] uppercase tracking-[0.3em] text-dim hover:text-bone transition flex items-center gap-3"
-            >
-              <span class="group-open:rotate-90 transition inline-block">&rsaquo;</span>
-              Technical details
-            </summary>
-            <div class="mt-6 grid sm:grid-cols-2 gap-x-12 gap-y-4 text-[12px]">
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Input A</span>
-                <span class="font-mono truncate ml-4" x-text="result.file_a"></span>
+          <!-- Idle placeholder -->
+          <template x-if="!hasResults && !running && !error">
+            <div class="card pad" style="text-align: center; color: var(--ink-3)">
+              <div class="eyebrow" style="margin-bottom: 8px">Ready</div>
+              <div style="font-size: 14px" x-show="files.length < 2">
+                Drop <b>two or more</b> audio files on the left to get started.
               </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Input B</span>
-                <span class="font-mono truncate ml-4" x-text="result.file_b"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Duration A · channels</span>
-                <span class="font-mono" x-text="result.duration_a_s + ' s · ' + channelLabel(result.channels_a)"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Duration B · channels</span>
-                <span class="font-mono" x-text="result.duration_b_s + ' s · ' + channelLabel(result.channels_b)"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Raw lag (b vs a)</span>
-                <span class="font-mono" x-text="result.lag_samples + ' samples'"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Sub-sample</span>
-                <span class="font-mono" x-text="result.sub_sample_lag.toFixed(3)"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Analysis SR</span>
-                <span class="font-mono" x-text="result.sample_rate + ' Hz'"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Peak correlation</span>
-                <span class="font-mono" x-text="result.peak_corr.toFixed(4)"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Peak / median</span>
-                <span class="font-mono" x-text="result.peak_over_median.toFixed(2) + '×'"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Envelope lag</span>
-                <span class="font-mono" x-text="result.envelope_lag_samples + ' samples'"></span>
-              </div>
-              <div class="flex justify-between border-b border-slate700/40 pb-2">
-                <span class="text-dim uppercase tracking-wider">Sanity check</span>
-                <span class="font-mono" :class="result.sanity_ok ? 'text-trace' : 'text-alert'" x-text="result.sanity_ok ? 'pass' : 'fail'"></span>
+              <div style="font-size: 14px" x-show="files.length >= 2">
+                Pin a reference, then press <b>Analyze</b>. Results appear here.
               </div>
             </div>
-          </details>
-        </section>
-      </template>
+          </template>
 
-      <!-- Footer notes -->
-      <section class="mt-20 grid md:grid-cols-3 gap-8 text-[12px] leading-relaxed text-bone/60">
-        <div>
-          <p class="text-[10px] uppercase tracking-[0.3em] text-signal mb-3">
-            01 / What it does
-          </p>
-          <p>
-            Computes the cross-correlation of the two signals via FFT. The
-            lag at peak correlation is the time offset; a negative peak
-            means polarity is inverted.
-          </p>
-        </div>
-        <div>
-          <p class="text-[10px] uppercase tracking-[0.3em] text-signal mb-3">
-            02 / How to use it
-          </p>
-          <p>
-            Bounce 10&ndash;30 seconds of both tracks from your DAW &mdash;
-            any portion with clear transients works best. The tool tells you
-            which file is the close mic, so labelling isn&rsquo;t required.
-          </p>
-        </div>
-        <div>
-          <p class="text-[10px] uppercase tracking-[0.3em] text-signal mb-3">
-            03 / Verify by ear
-          </p>
-          <p>
-            Apply the delay in a Sample Delay plugin, then null-test: flip
-            polarity, solo both mics, and listen for maximum cancellation.
-            That confirms the alignment is genuinely locked in.
-          </p>
-        </div>
-      </section>
-    </main>
+          <!-- Running card -->
+          <template x-if="running && !hasResults">
+            <div class="card pad">
+              <div class="eyebrow">Running</div>
+              <div style="font-size: 14px; margin-top: 6px">
+                Cross-correlating each track against
+                <b x-text="refFile ? refFile.name : 'reference'"></b>…
+              </div>
+              <div class="progress" style="margin-top: 14px"></div>
+              <div class="mono muted" style="font-size: 11px; margin-top: 10px">
+                FFT · 48 kHz mono · 30 s window · ±50 ms search
+              </div>
+            </div>
+          </template>
+
+          <!-- Results -->
+          <template x-if="selectedResult">
+            <div class="vstack" style="gap: 20px">
+              <!-- Headline -->
+              <div
+                class="headline"
+                :class="{ warn: !selectedResult.sanity_ok }"
+              >
+                <div class="badge">
+                  <span x-html="selectedResult.sanity_ok ? icons.check : icons.info"></span>
+                </div>
+                <div class="txt">
+                  <h2 x-html="headlineHtml(selectedResult)"></h2>
+                  <p x-html="headlineSub(selectedResult)"></p>
+                </div>
+                <div class="spacer"></div>
+                <div class="vstack" style="align-items: flex-end; gap: 6px">
+                  <button class="btn small" @click="copyValues(selectedResult)">
+                    <span x-html="icons.copy"></span>
+                    <span x-text="copiedId === selectedResult.id ? 'Copied' : 'Copy values'"></span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- KPI grid -->
+              <div class="readout-grid">
+                <div class="kpi accent">
+                  <div class="k">Delay</div>
+                  <div class="v num">
+                    <span x-text="selectedResult.delay_ms.toFixed(2)"></span><span class="unit">ms</span>
+                  </div>
+                  <div
+                    class="sub"
+                    x-text="selectedResult.delay_samples_48k + ' samples @ 48k'"
+                  ></div>
+                </div>
+                <div class="kpi">
+                  <div class="k">At 44.1 kHz</div>
+                  <div class="v num">
+                    <span x-text="selectedResult.delay_samples_44k"></span><span class="unit">samples</span>
+                  </div>
+                  <div class="sub">for session sample rate</div>
+                </div>
+                <div class="kpi">
+                  <div class="k">Polarity</div>
+                  <div class="v">
+                    <span x-text="selectedResult.invert_polarity ? '∅ invert' : 'normal'"></span>
+                  </div>
+                  <div class="sub" x-text="selectedResult.invert_polarity ? 'flip ∅ on close mic' : 'no inversion needed'"></div>
+                </div>
+                <div class="kpi">
+                  <div class="k">Confidence</div>
+                  <div class="v num">
+                    <span x-text="Math.round(selectedResult.confidence * 100)"></span><span class="unit">%</span>
+                  </div>
+                  <div
+                    class="sub"
+                    x-text="'peak ' + selectedResult.peak_corr.toFixed(2) + ' · ' + selectedResult.peak_over_median.toFixed(1) + '× noise'"
+                  ></div>
+                </div>
+              </div>
+
+              <!-- Sanity notice -->
+              <template x-if="!selectedResult.sanity_ok">
+                <div class="notice" role="status">
+                  <div class="ic"><span x-html="icons.info"></span></div>
+                  <div>
+                    <h4>Worth a second look</h4>
+                    <p>
+                      The coarse envelope check puts the offset near
+                      <span class="mono" x-text="selectedResult.envelope_lag_samples + ' samples'"></span>, but
+                      the fine correlator locked to
+                      <span class="mono" x-text="selectedResult.delay_samples_48k + ' samples'"></span>.
+                      On steady pitched sources this can happen if the correlator snaps to a pitch-period sidelobe.
+                    </p>
+                    <ul>
+                      <li>Try re-bouncing a section with a clear transient (rim hit, consonant, kick).</li>
+                      <li>Verify by ear with a null test in your DAW before applying.</li>
+                      <li>Or accept the envelope value as a starting point and fine-tune.</li>
+                    </ul>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Waveform compare -->
+              <div class="card pad">
+                <div class="section-title">
+                  <div>
+                    <div class="eyebrow">Waveform · aligned</div>
+                    <div style="font-size: 13px; color: var(--ink-3); margin-top: 2px">
+                      30-second analysis window · transients should line up vertically
+                    </div>
+                  </div>
+                  <div class="btn-group">
+                    <button :class="{ on: waveMode === 'aligned' }" @click="waveMode = 'aligned'">Aligned</button>
+                    <button :class="{ on: waveMode === 'original' }" @click="waveMode = 'original'">Original</button>
+                  </div>
+                </div>
+                <div class="waves">
+                  <div class="wave-row">
+                    <div class="label">
+                      <div class="t">Reference</div>
+                      <div class="m" x-text="refFile ? truncate(refFile.name, 24) : ''"></div>
+                    </div>
+                    <canvas
+                      x-ref="canvasRef"
+                      x-effect="drawWave($refs.canvasRef, reference && reference.peaks, 'var(--wave-a)', 0, false)"
+                    ></canvas>
+                    <div class="meta">0.00 ms</div>
+                  </div>
+                  <div class="wave-row">
+                    <div class="label">
+                      <div class="t" x-text="selected ? truncate(selected.name, 24) : ''"></div>
+                      <div class="m" x-text="waveMode === 'aligned' ? 'aligned' : 'as recorded'"></div>
+                    </div>
+                    <canvas
+                      x-ref="canvasTgt"
+                      x-effect="drawWave($refs.canvasTgt, selectedResult.target_peaks, 'var(--wave-b)', waveShiftPx(), waveMode === 'aligned' && selectedResult.invert_polarity)"
+                    ></canvas>
+                    <div
+                      class="meta"
+                      x-text="waveMode === 'aligned' ? '+' + selectedResult.delay_ms.toFixed(2) + ' ms' : '— ms'"
+                    ></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Spatial diagram -->
+              <template x-if="!selectedResult.close_is_reference">
+                <div class="spatial">
+                  <div class="eyebrow">Spatial — inferred</div>
+                  <div class="stage">
+                    <svg viewBox="0 0 600 120" preserveAspectRatio="none">
+                      <line x1="30" y1="60" x2="570" y2="60" stroke="#d9d6c8" stroke-dasharray="2 4" />
+                      <circle cx="60" cy="60" r="8" fill="var(--ink)" />
+                      <text x="60" y="92" text-anchor="middle" font-size="10" font-family="JetBrains Mono" fill="#6b6a63">SOURCE</text>
+                      <circle cx="240" cy="60" r="6" fill="var(--accent)" />
+                      <text x="240" y="44" text-anchor="middle" font-size="10" font-family="JetBrains Mono" font-weight="600" fill="var(--accent-ink)">CLOSE</text>
+                      <text x="240" y="92" text-anchor="middle" font-size="10" font-family="JetBrains Mono" fill="#6b6a63">arrives first</text>
+                      <circle cx="520" cy="60" r="6" fill="var(--ink-2)" stroke="var(--ink)" stroke-width="1" />
+                      <text x="520" y="44" text-anchor="middle" font-size="10" font-family="JetBrains Mono" font-weight="600" fill="var(--ink-2)">REFERENCE</text>
+                      <text
+                        x="520"
+                        y="92"
+                        text-anchor="middle"
+                        font-size="10"
+                        font-family="JetBrains Mono"
+                        fill="#6b6a63"
+                        x-text="'arrives +' + selectedResult.delay_ms.toFixed(2) + ' ms later'"
+                      ></text>
+                      <line x1="240" y1="30" x2="520" y2="30" stroke="var(--accent)" stroke-width="1" />
+                      <line x1="240" y1="26" x2="240" y2="34" stroke="var(--accent)" stroke-width="1" />
+                      <line x1="520" y1="26" x2="520" y2="34" stroke="var(--accent)" stroke-width="1" />
+                      <rect x="340" y="16" width="80" height="18" rx="4" fill="white" stroke="var(--accent)" />
+                      <text
+                        x="380"
+                        y="29"
+                        text-anchor="middle"
+                        font-size="11"
+                        font-family="JetBrains Mono"
+                        font-weight="600"
+                        fill="var(--accent-ink)"
+                        x-text="'≈ ' + distanceCm(selectedResult.delay_ms) + ' cm'"
+                      ></text>
+                      <line x1="60" y1="104" x2="240" y2="104" stroke="#c9c6b8" stroke-dasharray="3 3" />
+                      <text x="150" y="116" text-anchor="middle" font-size="10" font-family="JetBrains Mono" fill="#9a9890">unknown distance</text>
+                    </svg>
+                  </div>
+                  <div class="mono muted" style="font-size: 11px; text-align: center">
+                    sound travels ≈ 34 cm / ms — only the close-to-reference gap is measured
+                  </div>
+                </div>
+              </template>
+
+              <!-- Batch table -->
+              <template x-if="targetFiles.length > 1">
+                <div class="card" style="overflow: hidden">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th>Track</th>
+                        <th>Delay (ms)</th>
+                        <th>Samples @48k</th>
+                        <th>Polarity</th>
+                        <th>Confidence</th>
+                        <th>Check</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="f in targetFiles" :key="f.id">
+                        <tr
+                          :class="{ selected: f.id === selectedId }"
+                          @click="selectFile(f.id)"
+                        >
+                          <td class="name" x-text="f.name"></td>
+                          <td class="num">
+                            <template x-if="results[f.id]">
+                              <span x-text="results[f.id].delay_ms.toFixed(2)"></span>
+                            </template>
+                            <template x-if="!results[f.id]">
+                              <span class="muted">—</span>
+                            </template>
+                          </td>
+                          <td class="num">
+                            <template x-if="results[f.id]">
+                              <span x-text="results[f.id].delay_samples_48k"></span>
+                            </template>
+                            <template x-if="!results[f.id]">
+                              <span class="muted">—</span>
+                            </template>
+                          </td>
+                          <td>
+                            <template x-if="results[f.id] && results[f.id].invert_polarity">
+                              <span class="pill inv">∅ invert</span>
+                            </template>
+                            <template x-if="results[f.id] && !results[f.id].invert_polarity">
+                              <span class="pill">normal</span>
+                            </template>
+                            <template x-if="!results[f.id]">
+                              <span class="muted mono" style="font-size: 11px">—</span>
+                            </template>
+                          </td>
+                          <td>
+                            <template x-if="results[f.id]">
+                              <div class="hstack" style="gap: 8px">
+                                <div
+                                  class="confidence-bar"
+                                  :class="{ warn: results[f.id].confidence < 0.6 }"
+                                >
+                                  <span
+                                    :style="'width: ' + (results[f.id].confidence * 100) + '%'"
+                                  ></span>
+                                </div>
+                                <span
+                                  class="mono num"
+                                  style="font-size: 11px; color: var(--ink-3)"
+                                  x-text="(results[f.id].confidence * 100).toFixed(0) + '%'"
+                                ></span>
+                              </div>
+                            </template>
+                            <template x-if="!results[f.id]">
+                              <span class="muted mono" style="font-size: 11px">—</span>
+                            </template>
+                          </td>
+                          <td>
+                            <template x-if="results[f.id] && results[f.id].sanity_ok">
+                              <span class="pill ok"
+                                ><span x-html="icons.check10"></span> clean</span
+                              >
+                            </template>
+                            <template x-if="results[f.id] && !results[f.id].sanity_ok">
+                              <span class="pill warn"
+                                ><span x-html="icons.info10"></span> review</span
+                              >
+                            </template>
+                            <template x-if="!results[f.id]">
+                              <span class="muted mono" style="font-size: 11px">—</span>
+                            </template>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+
+              <!-- Tech details -->
+              <details class="card pad">
+                <summary class="mono" style="cursor: pointer; color: var(--ink-2); font-size: 12px">
+                  <span x-html="icons.chev"></span>
+                  Technical details
+                </summary>
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 6px 24px;
+                    margin-top: 12px;
+                    font-size: 12.5px;
+                  "
+                >
+                  <template x-for="row in techRows(selectedResult)" :key="row[0]">
+                    <div
+                      class="hstack"
+                      style="
+                        justify-content: space-between;
+                        border-bottom: 1px dashed var(--border);
+                        padding: 6px 0;
+                      "
+                    >
+                      <span class="mono" style="color: var(--ink-4)" x-text="row[0]"></span>
+                      <span class="mono num" style="color: var(--ink-2)" x-text="row[1]"></span>
+                    </div>
+                  </template>
+                </div>
+              </details>
+            </div>
+          </template>
+        </main>
+      </div>
+    </div>
 
     <script>
+      const ICONS = {
+        upload: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 10l6-6 6 6M4 20h16"/></svg>',
+        download: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 12l6 6 6-6M4 20h16"/></svg>',
+        pin: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5M5 9V3h14v6l-3 3v3H8v-3z"/></svg>',
+        x: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+        play: '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>',
+        refresh: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>',
+        check: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>',
+        info: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>',
+        copy: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+        alert: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
+        chev: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px"><path d="M6 9l6 6 6-6"/></svg>',
+        check10: '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>',
+        info10: '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>',
+      };
+
       function unphase() {
         return {
-          files: { a: null, b: null },
-          dragging: { a: false, b: false },
-          loading: false,
-          result: null,
+          icons: ICONS,
+          files: [],
+          refId: null,
+          selectedId: null,
+          results: {},
+          reference: null,
+          running: false,
           error: null,
-
-          // Phase tracking
-          phases: [
-            { key: 'upload',  label: 'upload'   },
-            { key: 'convert', label: 'convert'  },
-            { key: 'check',   label: 'check'    },
-            { key: 'verify',  label: 'verify'   },
-          ],
-          currentPhase: null,      // one of the phase keys, or 'done'
-          currentDecodeFile: null, // 'a' or 'b' during convert
+          dragging: false,
+          currentIndex: null,
+          currentPhase: null,
           uploadPct: 0,
+          waveMode: 'aligned',
+          copiedId: null,
 
-          get ready() {
-            return !!(this.files.a && this.files.b);
+          get targetFiles() {
+            return this.files.filter((f) => f.id !== this.refId);
+          },
+          get targetCount() {
+            return Math.max(0, this.files.length - (this.refId ? 1 : 0));
+          },
+          get canAnalyze() {
+            return this.files.length >= 2 && this.refId && !this.running;
+          },
+          get hasResults() {
+            return Object.keys(this.results).length > 0;
+          },
+          get refFile() {
+            return this.files.find((f) => f.id === this.refId);
+          },
+          get selected() {
+            return this.files.find((f) => f.id === this.selectedId);
+          },
+          get selectedResult() {
+            if (!this.selectedId || !this.results[this.selectedId]) return null;
+            return { ...this.results[this.selectedId], id: this.selectedId };
+          },
+          get runningStatus() {
+            if (this.uploadPct < 1) return 'uploading ' + Math.round(this.uploadPct * 100) + '%';
+            if (this.currentPhase === 'decoding' && this.currentIndex != null) {
+              return 'decoding ' + (this.files[this.currentIndex]?.name || '');
+            }
+            if (this.currentPhase === 'analyzing' && this.currentIndex != null) {
+              return 'aligning ' + (this.files[this.currentIndex]?.name || '');
+            }
+            return 'working…';
           },
 
-          get statusText() {
-            if (this.loading) return 'Status: Processing';
-            if (this.error) return 'Status: Error';
-            if (this.result) return 'Status: Complete';
-            if (this.ready) return 'Status: Armed';
-            return 'Status: Idle';
+          addFiles(fileList) {
+            const additions = [...fileList].map((file) => ({
+              id: 'f' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+              name: file.name,
+              size: file.size,
+              file,
+              status: 'ready',
+              duration: null,
+              channels: null,
+            }));
+            this.files = [...this.files, ...additions];
+            if (!this.refId && this.files.length) this.refId = this.files[0].id;
+            if (!this.selectedId) {
+              const first = this.files.find((f) => f.id !== this.refId);
+              if (first) this.selectedId = first.id;
+            }
+            this.results = {};
+            this.reference = null;
+            this.error = null;
           },
 
-          phaseStatus(key) {
-            if (!this.loading && !this.result && !this.error) return 'pending';
-            if (this.currentPhase === 'done') return 'done';
-            const curIdx = this.phases.findIndex((p) => p.key === this.currentPhase);
-            const idx = this.phases.findIndex((p) => p.key === key);
-            if (curIdx < 0) return 'pending';
-            if (idx < curIdx) return 'done';
-            if (idx === curIdx) return 'active';
-            return 'pending';
+          handleDrop(event) {
+            this.dragging = false;
+            if (event.dataTransfer?.files?.length) this.addFiles(event.dataTransfer.files);
+          },
+          handlePick(event) {
+            if (event.target.files?.length) this.addFiles(event.target.files);
+            event.target.value = '';
           },
 
-          phaseStatusText() {
-            const key = this.currentPhase;
-            if (!key) return '';
-            if (key === 'upload') return `Uploading ${Math.round(this.uploadPct*100)}%`;
-            if (key === 'convert') return `Decoding file ${this.currentDecodeFile === 'b' ? '2/2' : '1/2'}`;
-            if (key === 'check')   return 'Cross-correlating';
-            if (key === 'verify')  return 'Envelope sanity check';
-            return '';
+          removeFile(id) {
+            this.files = this.files.filter((f) => f.id !== id);
+            delete this.results[id];
+            if (id === this.refId) {
+              this.refId = this.files[0]?.id || null;
+              this.results = {};
+              this.reference = null;
+            }
+            if (id === this.selectedId) {
+              const nextSel = this.files.find((f) => f.id !== this.refId);
+              this.selectedId = nextSel?.id || null;
+            }
           },
-
-          handleDrop(event, slot) {
-            this.dragging[slot] = false;
-            const f = event.dataTransfer.files[0];
-            if (f) this.files[slot] = f;
+          pinReference(id) {
+            if (this.running) return;
+            this.refId = id;
+            if (this.selectedId === id) {
+              const other = this.files.find((f) => f.id !== id);
+              this.selectedId = other?.id || null;
+            }
+            this.results = {};
+            this.reference = null;
           },
-
-          handlePick(event, slot) {
-            const f = event.target.files[0];
-            if (f) this.files[slot] = f;
-          },
-
-          formatSize(bytes) {
-            if (bytes < 1024) return bytes + ' B';
-            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-            return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+          selectFile(id) {
+            if (id === this.refId) return;
+            this.selectedId = id;
           },
 
           analyze() {
-            this.loading = true;
+            if (!this.canAnalyze) return;
+            this.running = true;
             this.error = null;
-            this.result = null;
-            this.currentPhase = 'upload';
-            this.currentDecodeFile = null;
+            this.results = {};
+            this.reference = null;
             this.uploadPct = 0;
+            this.currentIndex = null;
+            this.currentPhase = null;
 
             const form = new FormData();
-            form.append('file_a', this.files.a);
-            form.append('file_b', this.files.b);
+            const refIndex = this.files.findIndex((f) => f.id === this.refId);
+            form.append('reference_index', String(refIndex));
+            for (const f of this.files) form.append('files', f.file, f.name);
 
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/api/align');
-            xhr.responseType = '';
-
             xhr.upload.onprogress = (e) => {
               if (e.lengthComputable) this.uploadPct = e.loaded / e.total;
             };
-            xhr.upload.onload = () => { this.uploadPct = 1; };
+            xhr.upload.onload = () => {
+              this.uploadPct = 1;
+            };
 
             let parsedOffset = 0;
-            const consumeLines = () => {
+            const consume = () => {
               const text = xhr.responseText;
               while (true) {
                 const nl = text.indexOf('\n', parsedOffset);
@@ -651,109 +679,237 @@
                 const line = text.slice(parsedOffset, nl);
                 parsedOffset = nl + 1;
                 if (!line.trim()) continue;
-                let evt;
-                try { evt = JSON.parse(line); } catch { continue; }
-                this.handleEvent(evt);
+                try {
+                  this.handleEvent(JSON.parse(line));
+                } catch (e) {
+                  /* ignore parse errors, partial buffers */
+                }
               }
             };
-            xhr.onprogress = consumeLines;
+            xhr.onprogress = consume;
             xhr.onload = () => {
-              consumeLines();
-              this.loading = false;
-              if (!this.result && !this.error) {
-                this.error = 'No result received from server.';
-              }
+              consume();
+              this.running = false;
+              this.currentPhase = null;
+              this.currentIndex = null;
             };
             xhr.onerror = () => {
-              this.loading = false;
-              this.error = 'Network error.';
+              this.running = false;
+              this.error = 'Network error during upload.';
             };
             xhr.send(form);
           },
 
           handleEvent(evt) {
-            if (evt.phase === 'decode') {
-              this.currentPhase = 'convert';
-              this.currentDecodeFile = evt.file;
-            } else if (evt.phase === 'check' || evt.phase === 'verify') {
-              this.currentPhase = evt.phase;
-            } else if (evt.phase === 'result') {
-              this.currentPhase = 'done';
-              this.result = evt;
-            } else if (evt.phase === 'error') {
+            this.currentPhase = evt.phase;
+            this.currentIndex = evt.index ?? null;
+
+            if (evt.phase === 'reference') {
+              this.reference = { peaks: evt.peaks };
+              evt.durations?.forEach((d, i) => {
+                if (this.files[i]) this.files[i].duration = d;
+              });
+              evt.channels?.forEach((c, i) => {
+                if (this.files[i]) this.files[i].channels = c;
+              });
+              return;
+            }
+            if (evt.phase === 'result') {
+              const f = this.files[evt.index];
+              if (f) this.results[f.id] = evt;
+              if (!this.selectedId || !this.targetFiles.some((tf) => tf.id === this.selectedId)) {
+                this.selectedId = this.targetFiles[0]?.id || null;
+              }
+              return;
+            }
+            if (evt.phase === 'error') {
               this.error = evt.detail || 'Unknown error';
             }
           },
 
-          closeMicName() {
-            if (!this.result) return '';
-            if (this.result.close_mic === 'aligned') return 'already aligned';
-            return this.result.close_mic;
-          },
-
-          closeMicExplanation() {
-            if (!this.result) return '';
-            if (this.result.close_mic === 'aligned') {
-              return 'The two recordings are already time-aligned. Only polarity may need attention.';
+          async copyValues(result) {
+            const text = [
+              'track: ' + result.name,
+              'delay: ' + result.delay_ms.toFixed(3) + ' ms',
+              'samples @ 48k: ' + result.delay_samples_48k,
+              'samples @ 44.1k: ' + result.delay_samples_44k,
+              'polarity: ' + (result.invert_polarity ? 'invert (∅)' : 'normal'),
+              'confidence: ' + Math.round(result.confidence * 100) + '%',
+            ].join('\n');
+            try {
+              await navigator.clipboard.writeText(text);
+              this.copiedId = result.id;
+              setTimeout(() => {
+                if (this.copiedId === result.id) this.copiedId = null;
+              }, 1400);
+            } catch (e) {
+              /* clipboard denied */
             }
-            const other =
-              this.result.close_mic === this.result.file_a
-                ? this.result.file_b
-                : this.result.file_a;
-            return `It arrived ${this.result.delay_ms.toFixed(2)} ms earlier than ${other}, consistent with being nearer the source.`;
           },
 
-          closeChannels() {
-            if (!this.result) return 0;
-            return this.result.close_mic === this.result.file_a
-              ? this.result.channels_a
-              : this.result.channels_b;
+          async exportCsv() {
+            if (!this.hasResults) return;
+            const rows = this.targetFiles
+              .map((f) => this.results[f.id])
+              .filter(Boolean)
+              .map((r) => ({
+                name: r.name,
+                delay_ms: r.delay_ms,
+                delay_samples_48k: r.delay_samples_48k,
+                delay_samples_44k: r.delay_samples_44k,
+                invert_polarity: r.invert_polarity,
+                confidence: r.confidence,
+                peak_over_median: r.peak_over_median,
+                sanity_ok: r.sanity_ok,
+              }));
+            const resp = await fetch('/api/export', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rows }),
+            });
+            if (!resp.ok) return;
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'unphase-session.csv';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
           },
 
-          farChannels() {
-            if (!this.result) return 0;
-            return this.result.close_mic === this.result.file_a
-              ? this.result.channels_b
-              : this.result.channels_a;
-          },
+          // Formatting helpers
 
+          formatSize(bytes) {
+            if (!bytes || isNaN(bytes)) return '—';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+          },
+          formatDuration(s) {
+            if (!s) return '—';
+            const m = Math.floor(s / 60);
+            const ss = Math.floor(s % 60);
+            return m + ':' + String(ss).padStart(2, '0');
+          },
           channelLabel(n) {
             if (!n) return '? ch';
             if (n === 1) return 'mono';
             if (n === 2) return 'stereo';
             return n + ' ch';
           },
-
-          distanceMeters() {
-            if (!this.result) return '0.00';
-            // 343 m/s → 0.343 m per ms
-            return (this.result.delay_ms * 0.343).toFixed(2);
+          truncate(str, n) {
+            if (!str) return '';
+            return str.length > n ? str.slice(0, n - 1) + '…' : str;
+          },
+          distanceCm(ms) {
+            return Math.round(ms * 34);
+          },
+          fileStatusLabel(f) {
+            if (!this.refId) return 'ready';
+            if (this.running && this.currentIndex != null && this.files[this.currentIndex]?.id === f.id) {
+              return this.currentPhase === 'decoding' ? 'decoding…' : 'analyzing…';
+            }
+            if (this.results[f.id]) return 'aligned';
+            if (this.error) return 'ready';
+            return 'ready';
+          },
+          fileStatusClass(f) {
+            if (this.running && this.currentIndex != null && this.files[this.currentIndex]?.id === f.id) {
+              return 'running';
+            }
+            if (this.results[f.id]) {
+              return this.results[f.id].sanity_ok ? 'ok' : 'warn';
+            }
+            return 'pending';
+          },
+          headlineHtml(r) {
+            const closeName = r.close_is_reference ? this.refFile?.name || 'reference' : r.name;
+            let html = 'Delay <em>' + escapeHtml(closeName) + '</em> by <em>' + r.delay_ms.toFixed(2) + ' ms</em>';
+            if (r.invert_polarity) html += ' · flip polarity <em>∅</em>';
+            return html;
+          },
+          headlineSub(r) {
+            const samples = "<span class='mono'>" + r.delay_samples_48k + '</span>';
+            let s = "That's " + samples + ' samples at 48 kHz (' + r.delay_samples_44k + ' @ 44.1 kHz). ';
+            s += r.close_is_reference
+              ? 'The reference is the <b>close</b> mic — this track arrived later, so delay the reference instead.'
+              : 'This mic is the <b>close</b> mic — it arrived first.';
+            s += r.invert_polarity
+              ? ' Sum with reference only after inverting to avoid cancellation.'
+              : ' No polarity change needed.';
+            return s;
+          },
+          techRows(r) {
+            return [
+              ['Reference', this.refFile?.name || '—'],
+              ['Target', r.name],
+              ['Duration', (r.duration_s || '—') + ' s · ' + this.channelLabel(r.channels)],
+              ['Analysis SR', '48 000 Hz mono'],
+              ['Search window', '±50 ms (±2400 samples)'],
+              ['Raw lag (b vs a)', r.lag_samples + ' samples'],
+              ['Sub-sample', (r.sub_sample_lag - Math.floor(r.sub_sample_lag)).toFixed(3)],
+              ['Peak correlation', r.peak_corr.toFixed(3)],
+              ['Peak / median', r.peak_over_median.toFixed(1) + '×'],
+              ['Envelope lag', r.envelope_lag_samples + ' samples'],
+              ['Close mic', r.close_mic],
+              ['Sanity check', r.sanity_ok ? 'pass' : 'disagreement'],
+            ];
           },
 
-          confidenceText() {
-            if (!this.result) return '';
-            return (this.result.confidence * 100).toFixed(1) + '%';
+          waveShiftPx() {
+            const r = this.selectedResult;
+            if (!r || this.waveMode !== 'aligned') return 0;
+            return Math.round(Math.min(40, r.delay_ms * 3));
           },
 
-          confidenceColor() {
-            if (!this.result) return 'bg-signal';
-            if (!this.result.sanity_ok) return 'bg-alert';
-            const c = this.result.confidence;
-            if (c > 0.75) return 'bg-trace';
-            if (c > 0.5) return 'bg-signal';
-            return 'bg-alert';
-          },
+          drawWave(canvas, peaks, color, offsetPx, invert) {
+            if (!canvas || !peaks || !peaks.length) return;
+            const height = 56;
+            const dpr = window.devicePixelRatio || 1;
+            const w = canvas.clientWidth || 400;
+            canvas.width = w * dpr;
+            canvas.height = height * dpr;
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, w, height);
 
-          confidenceAdvice() {
-            if (!this.result) return '';
-            const c = this.result.confidence;
-            if (c > 0.75) return 'Strong peak, well above the correlation noise floor — result is reliable.';
-            if (c > 0.5)
-              return 'Moderate peak — likely correct, but verify by ear with a null test.';
-            return 'Weak peak — the mics may be hearing very different content. Treat as a starting point, not a final value.';
+            ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, height / 2);
+            ctx.lineTo(w, height / 2);
+            ctx.stroke();
+
+            const n = peaks.length;
+            const barW = Math.max(1, w / n);
+            ctx.fillStyle = this.resolveColor(color);
+            for (let i = 0; i < n; i++) {
+              const v = Math.abs(peaks[i]);
+              const bh = Math.max(1, v * (height * 0.85));
+              const x = i * barW + (offsetPx || 0);
+              const y = invert ? height / 2 : (height - bh) / 2;
+              ctx.fillRect(x, y, barW * 0.85, invert ? bh / 2 : bh);
+              if (invert) {
+                ctx.fillRect(x, 0, barW * 0.85, bh / 2);
+              }
+            }
+          },
+          resolveColor(v) {
+            if (!v || !v.startsWith('var(')) return v;
+            const name = v.slice(4, -1).trim();
+            return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#333';
           },
         };
       }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+      }
     </script>
+    <style>
+      [x-cloak] { display: none !important; }
+    </style>
   </body>
 </html>

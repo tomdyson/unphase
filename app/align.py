@@ -102,6 +102,26 @@ def _normalize(x: np.ndarray) -> np.ndarray:
     return x / (s + 1e-12)
 
 
+def peak_series(audio: np.ndarray, n: int = 400) -> list[float]:
+    """Downsample audio to `n` normalized peak values for waveform display."""
+    if len(audio) == 0:
+        return [0.0] * n
+    buckets = np.array_split(audio, n)
+    peaks = np.array([float(np.max(np.abs(b))) if b.size else 0.0 for b in buckets])
+    m = peaks.max()
+    if m > 0:
+        peaks = peaks / m
+    return [round(float(v), 4) for v in peaks]
+
+
+def analysis_window(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Return the centered ≤30 s window used by `align()`, for visualization."""
+    n = len(audio)
+    win_len = min(n, 30 * sample_rate)
+    start = max(0, (n - win_len) // 2)
+    return audio[start : start + win_len]
+
+
 def align(
     audio_a: np.ndarray,
     audio_b: np.ndarray,
